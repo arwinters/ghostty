@@ -202,6 +202,16 @@ extension Ghostty {
             return v
         }
 
+        var statusPluginsManifest: String? {
+            guard let config = self.config else { return nil }
+            var value: UnsafePointer<Int8>?
+            let key = "macos-status-plugins"
+            guard ghostty_config_get(config, &value, key, UInt(key.utf8.count)),
+                  let value else { return nil }
+            let path = String(cString: value)
+            return path.isEmpty ? nil : path
+        }
+
         var title: String? {
             guard let config = self.config else { return nil }
             var v: UnsafePointer<Int8>?

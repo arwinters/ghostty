@@ -1082,6 +1082,20 @@ palette: Palette = .{},
 /// Available since: 1.1.0
 @"split-divider-color": ?Color = null,
 
+/// Experimental macOS status plugin host (protocol version 1).
+/// Absolute path to a JSON manifest listing trusted local plugin executables.
+/// Unset by default: no plugins run and no status bar is displayed.
+///
+/// Plugins run as your user, without a sandbox. Only enable manifests and
+/// executables you trust. The host renders bounded JSON status widgets below
+/// the native split tree; plugins cannot supply views or terminal input.
+///
+/// This experimental interface is not stable. See
+/// `examples/status-plugins/README.md` for setup, protocol, and limitations.
+/// Only implemented on macOS. Changes apply when the configured path changes
+/// or a new terminal container is opened.
+@"macos-status-plugins": ?[:0]const u8 = null,
+
 /// Control when Ghostty preserves a zoomed split. Under normal circumstances,
 /// any operation that changes focus or layout of the split tree in a window
 /// will unzoom any zoomed split. This configuration allows you to control
@@ -11375,4 +11389,21 @@ test "compatibility: window new-window" {
             cfg.@"macos-dock-drop-behavior",
         );
     }
+}
+
+test "native status plugin manifest configuration" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    try testing.expect(cfg.@"macos-status-plugins" == null);
+
+    var it: TestIterator = .{ .data = &.{
+        "--macos-status-plugins=/tmp/status-plugins.json",
+    } };
+    try cfg.loadIter(testing.allocator, &it);
+    try testing.expectEqualStrings("/tmp/status-plugins.json", cfg.@"macos-status-plugins".?);
+
+    var reset_it: TestIterator = .{ .data = &.{"--macos-status-plugins="} };
+    try cfg.loadIter(testing.allocator, &reset_it);
+    try testing.expect(cfg.@"macos-status-plugins" == null);
 }
