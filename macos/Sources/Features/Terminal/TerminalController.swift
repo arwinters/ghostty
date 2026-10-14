@@ -1331,6 +1331,23 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     @IBAction func closeTab(_ sender: Any?) {
         guard let window = window else { return }
+
+        // Status Lab: a tab with several panes is never closed without asking, even when
+        // nothing is running (confirm-close-surface only covers running processes).
+        if MultiPaneCloseConfirmation.isEnabled,
+           let panes = surfaceTree.root?.leaves().count, panes > 1 {
+            MultiPaneCloseConfirmation.ask(window: window, panes: panes, tabs: nil,
+                                           running: surfaceTree.contains(where: { $0.needsConfirmQuit })) { [weak self] in
+                guard let self, let window = self.window else { return }
+                if window.tabGroup?.windows.count ?? 0 > 1 {
+                    self.closeTabImmediately()
+                } else {
+                    self.closeWindowImmediately()
+                }
+            }
+            return
+        }
+
         guard window.tabGroup?.windows.count ?? 0 > 1 else {
             closeWindow(sender)
             return
@@ -1451,8 +1468,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // if we're closing the window. If we don't have a tabgroup for any
         // reason we check ourselves.
         let windows: [NSWindow] = window.tabGroup?.windows ?? [window]
-        let confirmControllers = windows
-            .compactMap({ $0.windowController as? TerminalController })
+        let controllers = windows.compactMap({ $0.windowController as? TerminalController })
+
+        // Status Lab: closing several panes at once always asks; see closeTab.
+        let panes = controllers.reduce(0) { $0 + ($1.surfaceTree.root?.leaves().count ?? 0) }
+        if MultiPaneCloseConfirmation.isEnabled, panes > 1 {
+            MultiPaneCloseConfirmation.ask(
+                window: window, panes: panes, tabs: windows.count,
+                running: controllers.contains { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) }
+            ) { [weak self] in self?.closeWindowImmediately() }
+            return
+        }
+
+        let confirmControllers = controllers
             .filter({ $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })
         guard
             !confirmControllers.isEmpty

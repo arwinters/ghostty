@@ -1,5 +1,15 @@
 # Status Lab changelog
 
+## 0.8.1 — 2026-10-14
+
+- Closing a tab or window with more than one pane always asks first, even when nothing
+  is running (Ghostty's confirm-close-surface only covers running programs). Covers the
+  tab strip's close button, Close Tab, the close_tab keybinding and the window's close
+  button. "Don't ask again" turns it off.
+- Session Manager is enabled in every Status Lab build (StatusLabVersion), not only for
+  specific bundle identifiers; settings and sessions live under the app's own bundle id.
+- examples/status-plugins/status-lab/build.py builds the app from this branch.
+
 ## 0.8.0 — 2026-10-14
 
 - Restart Terminal… in the pane context menu, for a stuck pane (like iTerm2's Restart
