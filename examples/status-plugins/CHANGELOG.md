@@ -1,5 +1,28 @@
 # Status Lab changelog
 
+## 0.8.2 — 2026-10-14
+
+- Tab titles of tmux panes show the session's directory (from tmux) instead of the bare
+  default title. One `tmux list-panes` call every 2 seconds serves tab titles and the
+  status bar, only while tmux panes exist.
+- Code review fixes:
+  - tmux panes work for fish users: the attach-or-create script always runs in /bin/sh;
+    the login shell only provides the environment.
+  - `window-save-state = never` is migrated to `always` once, so users can turn session
+    restore off again.
+  - Duplicate community plugin ids no longer make the host reject the whole manifest;
+    new plugins get unique ids. The editor no longer crashes on Remove and accepts spaces
+    in Arguments.
+  - tmux calls time out after one second, so a wedged tmux server cannot freeze the
+    pane context menu.
+  - Only the 10 newest Before Launch recovery points are kept, and replay files with
+    saved terminal output are deleted at the next launch.
+  - Restart Terminal leaves the pane untouched if replacing it fails, and keeps the font
+    size of tmux panes.
+  - build.py explains a missing `zig-out/share` when using --skip-core.
+- Documentation: status-lab/README.md describes why Status Lab exists, what it contains,
+  the design choices, how it was tested and its known limitations.
+
 ## 0.8.1 — 2026-10-14
 
 - Closing a tab or window with more than one pane always asks first, even when nothing
