@@ -129,6 +129,8 @@ Each record is a complete snapshot replacing that plugin's widgets:
   block graph (for example one block per CPU core) instead of the `history` sparkline.
 - `barColors` is optional: one RRGGBB per entry in `bars`, for example to tell
   performance and efficiency cores apart.
+- `symbol` is optional: an SF Symbol name (lowercase letters, digits and dots, for
+  example `cloud.sun.fill`), drawn by the host before the value.
 - Records are limited to 16 KiB. Partial records across pipe reads are supported.
 - Send a fresh snapshot at least every ten seconds, even if values are unchanged.
 - The host polls twice per second in common run-loop modes and consumes at most

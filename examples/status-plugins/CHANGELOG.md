@@ -1,5 +1,14 @@
 # Status Lab changelog
 
+## 0.8.4 — 2026-10-14
+
+- Fullscreen: the tab strip moves into a titlebar accessory, so it is hidden and appears
+  with the menu bar when the pointer reaches the top, also with a single tab (the native
+  tab bar only appears with two or more tabs).
+- Weather shows a real, larger weather icon (SF Symbols, multicolor) instead of a tiny
+  text glyph, with day and night variants.
+- Protocol addition (optional): widget `symbol`, an SF Symbol name drawn before the value.
+
 ## 0.8.3 — 2026-10-14
 
 - Fix (regression from 0.4.0): in native fullscreen the tab strip stayed visible and the

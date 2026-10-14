@@ -7,12 +7,14 @@ import SwiftUI
 struct TerminalTabStrip: View {
     @ObservedObject var model: TerminalTabStripModel
     let background: Color
+    /// The fullscreen titlebar copy is shown regardless of `model.visible`.
+    var ignoresVisibility = false
 
     private let spacing: CGFloat = 4
     private let newTabWidth: CGFloat = 28
 
     var body: some View {
-        if model.visible { strip }
+        if model.visible || ignoresVisibility { strip }
     }
 
     private var strip: some View {

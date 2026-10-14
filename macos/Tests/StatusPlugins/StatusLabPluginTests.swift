@@ -67,6 +67,15 @@ struct StatusLabPluginTests {
         #expect(fresh.stats.graphStyle == .blocks)
     }
 
+    @Test func symbolsAreNamesOnly() throws {
+        func frame(_ symbol: String) -> Data {
+            Data(#"{"version":1,"widgets":[{"id":"w","label":"","value":"11°C","color":"C0C5CE","symbol":"\#(symbol)"}]}"#.utf8)
+        }
+        #expect(try StatusPluginFrame.decode(frame("cloud.sun.fill")).widgets[0].symbol == "cloud.sun.fill")
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame("../etc/passwd")) }
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame("Cloud Sun")) }
+    }
+
     @Test func barColorsMustMatchBars() throws {
         func frame(_ colors: String) -> Data {
             Data(#"{"version":1,"widgets":[{"id":"cpu","label":"CPU","value":"1%","color":"5CC8FF","bars":[0.1,0.2],"barColors":\#(colors)}]}"#.utf8)

@@ -113,6 +113,13 @@ struct StatusPluginBar: View {
                 if !widget.label.isEmpty {
                     Text(widget.label).foregroundColor(.secondary)
                 }
+                if let symbol = widget.symbol {
+                    Image(systemName: symbol)
+                        .symbolRenderingMode(.multicolor)
+                        .font(.system(size: 14))
+                        .frame(height: 16)
+                        .accessibilityHidden(true)
+                }
                 Text(widget.value).monospacedDigit()
                 if let bars = widget.bars, !bars.isEmpty {
                     BlockGraph(values: bars,

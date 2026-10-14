@@ -68,6 +68,9 @@ struct StatusPluginFrame: Decodable {
         let bars: [Double]?
         /// Optional hex RRGGBB per bar, e.g. to tell performance and efficiency cores apart.
         let barColors: [String]?
+        /// Optional SF Symbol name shown before the value, e.g. "cloud.sun.fill". A name
+        /// only, never an image or markup; unknown names simply show nothing.
+        let symbol: String?
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -87,6 +90,11 @@ struct StatusPluginFrame: Decodable {
                   (widget.history?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
                   (widget.bars?.count ?? 0) <= 64 &&
                   (widget.bars?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
+                  (widget.symbol.map { name in
+                      !name.isEmpty && name.count <= 64 &&
+                          name.unicodeScalars.allSatisfy { CharacterSet.lowercaseLetters.contains($0) && $0.isASCII ||
+                              CharacterSet.decimalDigits.contains($0) || $0 == "." }
+                  } ?? true) &&
                   (widget.barColors.map { colors in
                       colors.count == widget.bars?.count &&
                           colors.allSatisfy { $0.utf8.count == 6 && UInt32($0, radix: 16) != nil }
