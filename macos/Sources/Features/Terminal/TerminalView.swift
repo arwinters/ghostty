@@ -53,6 +53,9 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
     // This seems like a crutch after switching from SwiftUI to AppKit lifecycle.
     @FocusState private var focused: Bool
 
+    // Set when the window draws the Status Lab tab strip instead of native tabs.
+    @Environment(\.terminalTabStrip) private var tabStrip
+
     // Various state values sent back up from the currently focused terminals.
     @FocusedValue(\.ghosttySurfaceView) private var focusedSurface
     @FocusedValue(\.ghosttySurfacePwd) private var surfacePwd
@@ -73,6 +76,10 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
         case .ready:
             ZStack {
                 VStack(spacing: 0) {
+                    if let tabStrip {
+                        TerminalTabStrip(model: tabStrip, background: ghostty.config.backgroundColor)
+                    }
+
                     // If we're running in debug mode we show a warning so that users
                     // know that performance will be degraded.
                     if Ghostty.info.mode == GHOSTTY_BUILD_MODE_DEBUG || Ghostty.info.mode == GHOSTTY_BUILD_MODE_RELEASE_SAFE {
@@ -105,11 +112,17 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                                idealHeight: lastFocusedSurface?.value?.initialSize?.height)
 
                     if let manifest = ghostty.config.statusPluginsManifest {
-                        StatusPluginBar(manifest: manifest, background: ghostty.config.backgroundColor)
+                        // The status bar hosts the session control on its trailing edge.
+                        StatusPluginBar(
+                            manifest: manifest,
+                            background: ghostty.config.backgroundColor,
+                            surface: focusedSurface ?? lastFocusedSurface?.value)
+                    } else if SessionManager.shared.enabled {
+                        SessionRecoveryBar()
                     }
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
-                .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden || tabStrip != nil ? .top : [])
 
                 if let surfaceView = lastFocusedSurface?.value {
                     TerminalCommandPaletteView(

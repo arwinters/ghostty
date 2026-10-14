@@ -10,6 +10,11 @@ struct StatusPluginManifest: Decodable {
         let id: String
         let executable: String
         let arguments: [String]
+        /// Optional bar placement: "leading" (default), "trailing" (right, before the
+        /// app's own controls) or "end" (far right, after the app's controls).
+        let position: String?
+
+        var placement: StatusPluginPlacement { position.flatMap(StatusPluginPlacement.init) ?? .leading }
     }
 
     static func load(_ path: String) throws -> Self {
@@ -29,10 +34,15 @@ struct StatusPluginManifest: Decodable {
               result.plugins.allSatisfy({
                   !$0.id.isEmpty && $0.id.count <= 64 &&
                   $0.executable.hasPrefix("/") && !$0.executable.contains("\0") && $0.arguments.count <= 32 &&
+                  ($0.position == nil || StatusPluginPlacement(rawValue: $0.position!) != nil) &&
                   $0.arguments.allSatisfy { $0.utf8.count <= 4096 && !$0.contains("\0") }
               }) else { throw StatusPluginError.invalidManifest }
         return result
     }
+}
+
+enum StatusPluginPlacement: String {
+    case leading, trailing, end
 }
 
 enum StatusPluginError: Error {
@@ -53,6 +63,11 @@ struct StatusPluginFrame: Decodable {
         let color: String
         /// Optional history, normalized to 0...1 by the producer.
         let history: [Double]?
+        /// Optional block graph (for example one bar per CPU core), normalized to 0...1.
+        /// Shown instead of the history sparkline when present.
+        let bars: [Double]?
+        /// Optional hex RRGGBB per bar, e.g. to tell performance and efficiency cores apart.
+        let barColors: [String]?
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -69,7 +84,13 @@ struct StatusPluginFrame: Decodable {
                   plain(widget.label, limit: 32) && plain(widget.value, limit: 64) &&
                   widget.color.utf8.count == 6 && UInt32(widget.color, radix: 16) != nil &&
                   (widget.history?.count ?? 0) <= 60 &&
-                  (widget.history?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true)
+                  (widget.history?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
+                  (widget.bars?.count ?? 0) <= 64 &&
+                  (widget.bars?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
+                  (widget.barColors.map { colors in
+                      colors.count == widget.bars?.count &&
+                          colors.allSatisfy { $0.utf8.count == 6 && UInt32($0, radix: 16) != nil }
+                  } ?? true)
               }) else { throw StatusPluginError.invalidFrame }
         return result
     }

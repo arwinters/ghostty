@@ -1,7 +1,9 @@
 # Native status plugins (experimental macOS prototype)
 
 This branch adds an opt-in, process-based plugin interface to Ghostty. Its first
-capability is a native status bar below the entire split tree. The example plugin
+capability is a native status bar below the entire split tree. The host displays
+the active pane's working directory and uses it for the tab/window title when
+available; that directory is not passed to plugin processes. The example plugin
 shows CPU, approximate physical RAM use, and network receive/transmit rates with
 60-sample sparklines. No tmux, shell replacement, or prompt integration is needed.
 
@@ -10,6 +12,18 @@ API. Stock Ghostty 1.3.1 cannot load it.** It requires a build of this branch un
 and unless upstream accepts and releases an implementation. The proposal avoids
 maintaining a permanent fork as its intended distribution strategy; it cannot
 promise upstream adoption. Linux does not yet render these plugins.
+
+## Try it as a separate app
+
+[`status-lab/`](status-lab/README.md) builds this branch as "Ghostty Status Lab.app", with
+its own identity and settings, beside your normal Ghostty:
+
+```sh
+python3 examples/status-plugins/status-lab/build.py --bundle-id com.yourname.ghostty.statuslab
+```
+
+It bundles the plugins below and adds the Plugin Manager, Session Manager, tmux panes,
+Restart Terminal and a compact tab strip.
 
 ## Build and try
 
@@ -83,14 +97,19 @@ so shell output and full-screen applications cannot overwrite it. On narrow
 windows the bar scrolls horizontally rather than squeezing terminal columns.
 Closing/hiding the container stops its plugins; showing it starts them again.
 
-Changing the configured manifest **path** reloads the host. Editing a manifest
-or executable at the same path requires reopening the terminal container (or
-removing the setting, reloading, restoring it, and reloading again). This avoids
-silently relaunching edited executables during unrelated configuration reloads.
+Changing the configured manifest **path** reloads the host. When the host reports
+an error, Reload Configuration or the bar's **Restart plugins** button restarts
+its plugins without closing terminals. Healthy hosts are not restarted by an
+unrelated configuration reload. Editing a healthy manifest or executable at the
+same path still requires reopening the container or changing the manifest path.
 
-Plugin failure removes its values and displays an error. It does not trigger an
-automatic restart loop. Stop sends SIGTERM and, after one second, SIGKILL if
-necessary. Plugins must be single foreground processes; descendant process-tree
+Plugin failure removes its values and displays an error. Each failed plugin is
+automatically retried after 2, 4, 8, 16, 32, then 60 seconds, capped at once per
+minute until recovery. Healthy siblings are not restarted. Backoff resets only
+after 60 seconds of healthy operation. Failure reasons and delays are recorded
+in macOS unified logging (category StatusPlugins). Stop cancels pending retries,
+sends SIGTERM and, after one second, SIGKILL if necessary. A replacement waits
+until the old process has exited. Plugins must be single foreground processes; descendant process-tree
 management is not implemented. Do not daemonize or launch background children.
 
 ## Protocol v1: status capability
@@ -106,10 +125,18 @@ Each record is a complete snapshot replacing that plugin's widgets:
 - `id`, `label`, and `value` are plain strings limited to 64, 32, and 64 characters.
 - `color` is exactly six hexadecimal digits (RRGGBB).
 - `history` is optional, at most 60 finite numbers in the range 0...1.
+- `bars` is optional, at most 64 finite numbers in the range 0...1. It is drawn as a
+  block graph (for example one block per CPU core) instead of the `history` sparkline.
+- `barColors` is optional: one RRGGBB per entry in `bars`, for example to tell
+  performance and efficiency cores apart.
 - Records are limited to 16 KiB. Partial records across pipe reads are supported.
 - Send a fresh snapshot at least every ten seconds, even if values are unchanged.
-- The host polls twice per second and consumes at most 64 KiB per poll per plugin.
-  Malformed, oversized, excessive, or stale output stops that plugin.
+- The host polls twice per second in common run-loop modes and consumes at most
+  64 KiB per poll per plugin. One buffered burst is drained across polls; three
+  consecutive full batches stop the plugin as a sustained backlog. Individual
+  records remain limited to 16 KiB. Malformed or stale output also stops it.
+- Heartbeat timing uses system uptime. After a polling gap longer than five
+  seconds, the producer gets a fresh heartbeat grace period.
 - stdin and stderr go to the null device. Run plugins manually for diagnostics.
 - The process receives a minimal PATH/LANG and `GHOSTTY_PLUGIN_PROTOCOL=1`.
   Terminal input, output, working directories, and inherited credentials are
@@ -119,6 +146,43 @@ This is intentionally a small plugin framework with a single rendering
 capability. It is not a general-purpose scripting engine, marketplace, or binary
 ABI. Plugins can be authored in any language that can emit the protocol. Further
 capabilities need separate design review and protocol versioning.
+
+### Placement
+
+A manifest entry may set `"position": "leading"` (default, after the working directory),
+`"position": "trailing"` (right side, before the app's own controls) or
+`"position": "end"` (far right, after the app's controls; the clock's default).
+Other values reject the manifest.
+
+## Bundled plugins (Status Lab builds)
+
+| Plugin | Source | Data |
+| --- | --- | --- |
+| System Stats | `system-stats.swift` | CPU (line or per-core blocks), RAM, network down/up, disk space, disk read/write. Local only. |
+| Weather | `weather.swift` | Current conditions from Open-Meteo for configured coordinates; refreshed every 15 minutes. |
+| Clock | `clock.swift` | Day, date, year and time from a locale-aware `DateFormatter` template. |
+
+Each is a single Swift file: `swiftc -O weather.swift -o weather`. They double as
+examples for community plugins. Status Lab's Plugin Manager writes the manifest from
+its settings (`plugins.settings.json` → `plugins.generated.json` in the app's
+Application Support directory) and lets users add any other protocol v1 executable.
+
+## tmux panes (Status Lab builds)
+
+tmux is not a status plugin: it opens panes. Profiles (name, directory, command,
+resume command) are configured in the Plugin Manager and opened from the Plugins menu.
+Each pane runs `tmux new-session` (or attaches when the session exists) through the
+user's login shell, so tools such as `claude` are on `PATH`. Right-clicking a pane
+shows a tmux submenu with the profiles and all detached sessions, to open as a split
+next to that pane or as a new tab. Session names are
+`ghostty-<profile>-<random>`.
+
+The Session Manager stores the tmux session per pane. Because the tmux server runs
+outside Ghostty, an app crash leaves the session and its program running: restore
+reattaches without starting anything. After a restart or shutdown the server is gone,
+and restore recreates the session in the saved directory with the resume command
+(default for Claude: `claude --continue`). When the command exits, the pane keeps a
+login shell. Closing a pane detaches it; end sessions from the Plugin Manager.
 
 ## Example metrics
 

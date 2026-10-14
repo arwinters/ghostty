@@ -22,6 +22,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         case .native: "Terminal"
         case .hidden: "TerminalHiddenTitlebar"
         case .transparent: "TerminalTransparentTitlebar"
+        case .tabs where Bundle.main.object(forInfoDictionaryKey: "StatusLabVersion") != nil:
+            // Status Lab draws its own compact tab strip; see StripTabsTerminalWindow.
+            "TerminalStripTabs"
         case .tabs:
 #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
@@ -1113,8 +1116,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         // Initialize our content view to the SwiftUI root
+        let tabStrip = (window as? StripTabsTerminalWindow)?.tabStrip
         let container = TerminalViewContainer {
             TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+                .environment(\.terminalTabStrip, tabStrip)
         }
 
         // Set the initial content size on the container so that
@@ -1230,6 +1235,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     override func windowWillClose(_ notification: Notification) {
+        // No checkpoint here: during quit AppKit closes tabs one by one after detaching them
+        // from their group. The periodic checkpoint picks up tabs closed by the user.
+        SessionManager.shared.closed(self)
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
         self.relabelTabs()

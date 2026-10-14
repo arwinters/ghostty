@@ -889,8 +889,17 @@ class BaseTerminalController: NSWindowController,
            surfaceTree.contains(titleSurface) {
             // If we have a surface, we want to listen for title changes.
             titleSurface.$title
-                .combineLatest(titleSurface.$bell)
-                .map { [weak self] in self?.computeTitle(title: $0, bell: $1) ?? "" }
+                .combineLatest(titleSurface.$bell, titleSurface.$pwd)
+                .map { [weak self] title, bell, pwd in
+                    guard let self else { return "" }
+                    // Status Lab follows the active pane's directory, even when a
+                    // foreground program supplies its own terminal title.
+                    let directory = pwd.flatMap { $0.isEmpty ? nil : $0 }
+                    let displayTitle = self.ghostty.config.statusPluginsManifest != nil
+                        ? directory.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? title
+                        : title
+                    return self.computeTitle(title: displayTitle, bell: bell)
+                }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
                 .store(in: &focusedSurfaceCancellables)
         } else {

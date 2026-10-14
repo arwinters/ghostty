@@ -1,0 +1,178 @@
+import Foundation
+import Testing
+@testable import Ghostty
+
+struct StatusLabPluginTests {
+    let helpers = URL(fileURLWithPath: "/Apps/Lab.app/Contents/Helpers")
+
+    @Test func defaultManifestShipsStatsWeatherAndClock() throws {
+        let manifest = StatusLabPluginSettings().manifest(helpers: helpers, interface: "en7", locale: "nl_NL")
+        #expect(manifest.plugins.map(\.id) == ["system-stats", "weather", "clock"])
+        #expect(manifest.plugins[0].arguments == ["en7", "--graph", "blocks"])
+        #expect(manifest.plugins[0].position == "leading")
+        #expect(manifest.plugins[1].position == "trailing")
+        #expect(manifest.plugins[2].position == "end")
+        #expect(manifest.plugins[2].arguments == ["--template", "EEE d MMM yyyy HH:mm", "--locale", "nl_NL"])
+        #expect(manifest.plugins.allSatisfy { $0.executable.hasPrefix(helpers.path + "/") })
+    }
+
+    @Test func generatedManifestIsAcceptedByTheHost() throws {
+        var settings = StatusLabPluginSettings()
+        settings.weather.location = .init(name: "Utrecht", latitude: 52.09, longitude: 5.12)
+        settings.stats.graphStyle = .lines
+        settings.stats.disk = false
+        settings.custom = [.init(id: "community", executable: "/usr/local/bin/plugin", arguments: ["--x"])]
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try JSONEncoder().encode(settings.manifest(helpers: helpers, interface: "en0", locale: "en_US")).write(to: file)
+        let loaded = try StatusPluginManifest.load(file.path)
+        #expect(loaded.plugins.map(\.id) == ["system-stats", "weather", "clock", "community"])
+        #expect(loaded.plugins[0].arguments == ["en0", "--graph", "lines", "--no-disk"])
+        #expect(loaded.plugins[1].arguments.contains("Utrecht"))
+        #expect(loaded.plugins[1].placement == .trailing)
+        #expect(loaded.plugins[2].placement == .end)
+        #expect(loaded.plugins[3].placement == .leading)
+    }
+
+    @Test func invalidCustomPluginsAreSkippedAndTotalIsCapped() {
+        var settings = StatusLabPluginSettings()
+        settings.custom = [
+            .init(id: "clock", executable: "/bin/echo"),       // reserved id
+            .init(id: "relative", executable: "bin/echo"),     // not absolute
+            .init(id: "off", executable: "/bin/echo", enabled: false),
+        ] + (1...10).map { .init(id: "p\($0)", executable: "/bin/echo") }
+        let ids = settings.manifest(helpers: helpers, interface: "en0", locale: "en").plugins.map(\.id)
+        #expect(ids.count == 8)
+        #expect(!ids.contains("relative") && !ids.contains("off") && ids.filter { $0 == "clock" }.count == 1)
+    }
+
+    @Test func legacyCPUGraphSettingIsKept() throws {
+        let json = #"{"stats":{"cpuGraph":"sparkline"}}"#
+        let settings = try JSONDecoder().decode(StatusLabPluginSettings.self, from: Data(json.utf8))
+        #expect(settings.stats.graphStyle == .lines)
+        let fresh = try JSONDecoder().decode(StatusLabPluginSettings.self, from: Data("{}".utf8))
+        #expect(fresh.stats.graphStyle == .blocks)
+    }
+
+    @Test func barColorsMustMatchBars() throws {
+        func frame(_ colors: String) -> Data {
+            Data(#"{"version":1,"widgets":[{"id":"cpu","label":"CPU","value":"1%","color":"5CC8FF","bars":[0.1,0.2],"barColors":\#(colors)}]}"#.utf8)
+        }
+        #expect(try StatusPluginFrame.decode(frame(#"["5CC8FF","2DD4BF"]"#)).widgets[0].barColors?.count == 2)
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#"["5CC8FF"]"#)) }
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#"["5CC8FF","red"]"#)) }
+    }
+
+    @Test func savedProfilesWithoutNewFieldsStillLoad() throws {
+        let json = #"{"tmux":{"profiles":[{"id":"claude","name":"Claude","directory":"~","command":"claude","resumeCommand":"claude --continue"}]}}"#
+        let settings = try JSONDecoder().decode(StatusLabPluginSettings.self, from: Data(json.utf8))
+        #expect(settings.tmux.profiles.count == 1)
+        #expect(settings.tmux.profiles[0].askForDirectory)
+        #expect(settings.tmux.profiles[0].effectiveResumeCommand == "claude --continue")
+    }
+
+    @Test func olderSettingsDecodeWithDefaults() throws {
+        let json = #"{"stats":{"enabled":false},"tmux":{"profiles":[]}}"#
+        let settings = try JSONDecoder().decode(StatusLabPluginSettings.self, from: Data(json.utf8))
+        #expect(!settings.stats.enabled)
+        #expect(settings.stats.interface == "auto")
+        #expect(settings.clock.enabled)
+        #expect(settings.tmux.enabled && settings.tmux.profiles.isEmpty)
+    }
+
+    @Test func barsAndPositionAreValidated() throws {
+        let valid = #"{"version":1,"widgets":[{"id":"cpu","label":"CPU","value":"1%","color":"5CC8FF","bars":[0,0.5,1]}]}"#
+        #expect(try StatusPluginFrame.decode(Data(valid.utf8)).widgets[0].bars == [0, 0.5, 1])
+        let outOfRange = #"{"version":1,"widgets":[{"id":"cpu","label":"CPU","value":"1%","color":"5CC8FF","bars":[1.5]}]}"#
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(Data(outOfRange.utf8)) }
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data(#"{"version":1,"plugins":[{"id":"a","executable":"/bin/echo","arguments":[],"position":"middle"}]}"#.utf8)
+            .write(to: file)
+        #expect(throws: StatusPluginError.self) { try StatusPluginManifest.load(file.path) }
+    }
+
+    // MARK: tmux
+
+    @Test func tmuxSessionNamesAreSafe() {
+        let name = TmuxCommand.newSessionName(profile: "My Claude!")
+        #expect(name.hasPrefix("ghostty-my-claude--"))
+        #expect(TmuxCommand.isValidSessionName(name))
+        #expect(!TmuxCommand.isValidSessionName("bad;name"))
+        #expect(!TmuxCommand.isValidSessionName("a b"))
+        #expect(!TmuxCommand.isValidSessionName(""))
+    }
+
+    @Test func tmuxCommandAttachesOrCreatesAndSurvivesQuotes() throws {
+        let command = TmuxCommand.surfaceCommand(tmux: "/opt/homebrew/bin/tmux", shell: "/bin/zsh",
+                                                 session: "ghostty-claude-ab12", directory: "/Users/me/it's here",
+                                                 command: "claude --continue")
+        #expect(command.hasPrefix("/bin/sh -c "))
+        // Unwrap the quoting layers like the shells would and check the final script.
+        let outer = try #require(Self.unquote(String(command.dropFirst("/bin/sh -c ".count))))
+        #expect(outer.hasPrefix("exec '/bin/zsh' -lic "))
+        let script = try #require(Self.unquote(String(outer.dropFirst("exec '/bin/zsh' -lic ".count))))
+        #expect(script.contains("has-session -t '=ghostty-claude-ab12'"))
+        #expect(script.contains("attach-session -t '=ghostty-claude-ab12'"))
+        #expect(script.contains("-c '/Users/me/it'\"'\"'s here'"))
+        #expect(script.contains("'claude --continue; exec '\"'\"'/bin/zsh'\"'\"' -l'"))
+    }
+
+    @Test func tmuxStatusBarIsHiddenOnlyForThisSession() throws {
+        let command = TmuxCommand.surfaceCommand(tmux: "tmux", shell: "/bin/zsh", session: "ghostty-a-1",
+                                                 directory: "/tmp", command: "claude", hideStatus: true)
+        let outer = try #require(Self.unquote(String(command.dropFirst("/bin/sh -c ".count))))
+        let script = try #require(Self.unquote(String(outer.dropFirst("exec '/bin/zsh' -lic ".count))))
+        #expect(script.contains("'tmux' set-option -t '=ghostty-a-1:' status off 2>/dev/null; exec 'tmux' attach-session"))
+        #expect(script.contains("' ';' set-option status off; fi"))
+        #expect(!script.contains("-g"))
+        let plain = TmuxCommand.surfaceCommand(tmux: "tmux", shell: "/bin/zsh", session: "ghostty-a-1",
+                                               directory: "/tmp", command: "claude")
+        #expect(!plain.contains("status off"))
+    }
+
+    @Test func tmuxPanesRoundTripInSnapshotsAndOldSnapshotsStillLoad() throws {
+        let tmux = TmuxPane(session: "ghostty-claude-ab12", profile: "claude", directory: "/tmp",
+                            resumeCommand: "claude --continue")
+        var pane = SessionSnapshot.Pane(id: UUID(), directory: "/tmp", title: "claude", customTitle: false,
+                                        fontSize: 14, transcript: "")
+        pane.tmux = tmux
+        let snapshot = SessionSnapshot(windows: [.init(group: 0, selected: true, key: true, frame: [0, 0, 800, 600],
+                                                       fullscreen: false, tree: .pane(pane))])
+        let decoded = try JSONDecoder().decode(SessionSnapshot.self, from: JSONEncoder().encode(snapshot))
+        try decoded.validate()
+        #expect(decoded.windows[0].tree.panes[0].tmux == tmux)
+
+        pane.tmux = nil
+        let old = SessionSnapshot(windows: [.init(group: 0, selected: true, key: true, frame: [0, 0, 800, 600],
+                                                  fullscreen: false, tree: .pane(pane))])
+        var json = try #require(String(data: JSONEncoder().encode(old), encoding: .utf8))
+        json = json.replacingOccurrences(of: ",\"tmux\":null", with: "")
+        #expect(try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8)).windows[0].tree.panes[0].tmux == nil)
+
+        pane.tmux = TmuxPane(session: "x;rm -rf ~", profile: "claude", directory: "/tmp", resumeCommand: "claude")
+        let unsafe = SessionSnapshot(windows: [.init(group: 0, selected: true, key: true, frame: [0, 0, 800, 600],
+                                                     fullscreen: false, tree: .pane(pane))])
+        #expect(throws: SessionStore.Failure.self) { try unsafe.validate() }
+    }
+
+    @Test func tmuxDirectoriesExpandHome() {
+        #expect(TmuxCommand.expand(directory: "~", home: "/Users/me") == "/Users/me")
+        #expect(TmuxCommand.expand(directory: "~/code", home: "/Users/me") == "/Users/me/code")
+        #expect(TmuxCommand.expand(directory: "/srv", home: "/Users/me") == "/srv")
+    }
+
+    /// Lets a real shell remove one level of quoting from a single quoted word.
+    static func unquote(_ word: String) -> String? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "printf %s " + word]
+        process.standardOutput = output
+        guard (try? process.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? String(data: data, encoding: .utf8) : nil
+    }
+}

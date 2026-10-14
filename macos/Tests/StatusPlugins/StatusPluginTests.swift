@@ -109,7 +109,67 @@ struct StatusPluginTests {
         host.start(manifest: path.path)
         try await Task.sleep(for: .seconds(2))
         #expect(host.items.isEmpty)
-        #expect(host.errors.contains { $0.contains("excessive") })
+        #expect(host.errors.contains { $0.contains("output limit") })
+    }
+
+    @Test @MainActor func finiteBacklogSurvivesAndFailedHostCanRestart() async throws {
+        let path = try manifest(executable: "/bin/sh", arguments: [
+            "-c", "i=0; while [ $i -lt 800 ]; do printf '%s\\n' \"$1\"; i=$((i+1)); done; exec /bin/sleep 30",
+            "fixture", frame
+        ])
+        defer { try? FileManager.default.removeItem(at: path) }
+        let host = StatusPluginHost()
+        defer { host.stop() }
+        host.start(manifest: path.path)
+        try await Task.sleep(for: .seconds(3))
+        #expect(host.items.first?.widget.value == "25%")
+        #expect(host.errors.isEmpty)
+
+        host.start(manifest: "/nonexistent-status-plugin-manifest")
+        #expect(!host.errors.isEmpty)
+        host.start(manifest: path.path)
+        try await Task.sleep(for: .seconds(3))
+        #expect(host.items.first?.widget.value == "25%")
+        #expect(host.errors.isEmpty)
+    }
+
+    @Test func retriesBackOffAndResetOnlyAfterRecovery() {
+        var retry = StatusPluginHost.RetryPolicy()
+        #expect((0..<8).map { _ in retry.nextDelay() } == [2, 4, 8, 16, 32, 60, 60, 60])
+        retry.recovered()
+        #expect(retry.nextDelay() == 2)
+    }
+
+    @Test @MainActor func exitedPluginRecoversAutomatically() async throws {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let path = try manifest(executable: "/bin/sh", arguments: [
+            "-c", "if [ ! -e \"$2\" ]; then touch \"$2\"; exit 1; fi; printf '%s\\n' \"$1\"; exec /bin/sleep 30",
+            "fixture", frame, marker.path
+        ])
+        defer { try? FileManager.default.removeItem(at: path) }
+        let host = StatusPluginHost()
+        defer { host.stop() }
+        host.start(manifest: path.path)
+        try await Task.sleep(for: .seconds(5))
+        #expect(host.items.first?.widget.value == "25%")
+        #expect(host.errors.isEmpty)
+    }
+
+    @Test @MainActor func disablingCancelsPendingRetry() async throws {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let path = try manifest(executable: "/bin/sh", arguments: [
+            "-c", "printf x >> \"$1\"; exit 1", "fixture", marker.path
+        ])
+        defer { try? FileManager.default.removeItem(at: path) }
+        let host = StatusPluginHost()
+        host.start(manifest: path.path)
+        try await Task.sleep(for: .seconds(1))
+        host.stop()
+        try await Task.sleep(for: .seconds(3))
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "x")
+        #expect(host.errors.isEmpty)
     }
 
     @Test @MainActor func silentPluginTimesOut() async throws {
@@ -118,7 +178,14 @@ struct StatusPluginTests {
         let host = StatusPluginHost()
         defer { host.stop() }
         host.start(manifest: path.path)
-        try await Task.sleep(for: .seconds(12))
-        #expect(host.errors.contains { $0.contains("timed out") })
+        var timedOut = false
+        for _ in 0..<48 {
+            try await Task.sleep(for: .milliseconds(250))
+            if host.errors.contains(where: { $0.contains("timed out") }) {
+                timedOut = true
+                break
+            }
+        }
+        #expect(timedOut)
     }
 }

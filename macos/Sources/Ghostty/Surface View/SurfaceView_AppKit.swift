@@ -1615,9 +1615,19 @@ extension Ghostty {
             item = menu.addItem(withTitle: "Split Up", action: #selector(splitUp(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
 
+            // Status Lab: tmux profiles and detached sessions, opened next to this pane.
+            if let tmux = TmuxPlugin.shared.contextMenuItem(for: self) {
+                menu.addItem(.separator())
+                menu.addItem(tmux)
+            }
+
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Reset Terminal", action: #selector(resetTerminal(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise")
+            item = menu.addItem(withTitle: "Restart Terminal…", action: #selector(restartTerminal(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "arrow.clockwise.circle")
+            item.toolTip = "For a stuck pane: stops every program in this pane and starts a new shell in the same directory."
+            item = menu.addItem(withTitle: "Clear Garbled Screen", action: #selector(resetTerminal(_:)), keyEquivalent: "")
+            item.setImageIfDesired(systemSymbolName: "eraser")
+            item.toolTip = "Resets the screen and terminal modes after garbled output. Programs keep running."
             item = menu.addItem(withTitle: "Toggle Terminal Inspector", action: #selector(toggleTerminalInspector(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "scope")
             item = menu.addItem(withTitle: "Terminal Read-only", action: #selector(toggleReadonly(_:)), keyEquivalent: "")
@@ -1855,6 +1865,13 @@ extension Ghostty {
                 self.windowAppearance = .init(ghosttyConfig: config)
                 self.scrollbar = config.scrollbar
             }
+        }
+
+        var sessionHasCustomTitle: Bool { titleFromTerminal != nil }
+
+        func sessionRestoreTitle(_ value: String, custom: Bool) {
+            title = value
+            if custom { titleFromTerminal = value }
         }
 
         // MARK: - Codable
