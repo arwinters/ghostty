@@ -49,8 +49,14 @@ final class TmuxPlugin: ObservableObject {
 
     @Published private(set) var running: [RunningSession] = []
     @Published private(set) var lastError: String?
+    /// Working directory of each session's active pane, as tracked by tmux. tmux does not
+    /// forward the shell's directory reports, so tab titles and the status bar use this.
+    @Published private(set) var paths: [String: String] = [:]
 
-    private var panes: [UUID: TmuxPane] = [:]
+    private var panes: [UUID: TmuxPane] = [:] {
+        didSet { updatePathPolling() }
+    }
+    private var pathTimer: Timer?
 
     // MARK: Executables
 
@@ -67,6 +73,39 @@ final class TmuxPlugin: ObservableObject {
     // MARK: Pane registry
 
     func pane(for id: UUID) -> TmuxPane? { panes[id] }
+
+    /// The directory to show for a surface that is a tmux pane.
+    func path(for id: UUID) -> String? { panes[id].flatMap { paths[$0.session] ?? $0.directory } }
+
+    private func updatePathPolling() {
+        if panes.isEmpty {
+            pathTimer?.invalidate()
+            pathTimer = nil
+        } else if pathTimer == nil {
+            pathTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                self?.refreshPaths()
+            }
+            refreshPaths()
+        }
+    }
+
+    private func refreshPaths() {
+        guard let tmux = tmuxPath else { return }
+        DispatchQueue.global(qos: .utility).async {
+            // One call for every session: the active pane of each session's active window.
+            let output = Self.run(tmux, ["list-panes", "-a", "-F",
+                                         "#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_current_path}"])
+            var result: [String: String] = [:]
+            for line in (output ?? "").split(separator: "\n") {
+                let fields = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+                guard fields.count == 4, fields[1] == "1", fields[2] == "1", fields[3].hasPrefix("/") else { continue }
+                result[fields[0]] = fields[3]
+            }
+            DispatchQueue.main.async {
+                if result != self.paths { self.paths = result }
+            }
+        }
+    }
 
     func forget(_ id: UUID) { panes.removeValue(forKey: id) }
 
@@ -126,8 +165,8 @@ final class TmuxPlugin: ObservableObject {
     }
 
     /// The surface configuration that (re)attaches to a saved tmux pane.
-    func surfaceConfiguration(for pane: TmuxPane) -> Ghostty.SurfaceConfiguration {
-        configuration(pane, command: pane.resumeCommand)
+    func surfaceConfiguration(for pane: TmuxPane, fontSize: Float? = nil) -> Ghostty.SurfaceConfiguration {
+        configuration(pane, command: pane.resumeCommand, fontSize: fontSize)
     }
 
     func register(_ view: Ghostty.SurfaceView, as pane: TmuxPane) { panes[view.id] = pane }
@@ -329,15 +368,6 @@ final class TmuxPlugin: ObservableObject {
         if alert.runModal() == .alertFirstButtonReturn { kill(name) }
     }
 
-    /// The working directory of the session's active pane, as tracked by tmux.
-    func currentPath(_ session: String) -> String? {
-        guard let tmux = tmuxPath, TmuxCommand.isValidSessionName(session),
-              let output = Self.run(tmux, ["display-message", "-p", "-t", "=" + session + ":",
-                                           "#{pane_current_path}"]) else { return nil }
-        let path = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.hasPrefix("/") ? path : nil
-    }
-
     func kill(_ name: String) {
         guard let tmux = tmuxPath, TmuxCommand.isValidSessionName(name) else { return }
         DispatchQueue.global(qos: .userInitiated).async {
@@ -346,17 +376,24 @@ final class TmuxPlugin: ObservableObject {
         }
     }
 
-    /// Runs tmux directly (no shell). Returns nil when no server is running.
-    private static func run(_ executable: String, _ arguments: [String]) -> String? {
+    /// Runs tmux directly (no shell). Returns nil when no server is running, or when tmux
+    /// does not answer within `timeout` (a wedged server must not freeze a menu).
+    private static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 1) -> String? {
         let process = Process()
         let output = Pipe()
+        let finished = DispatchSemaphore(value: 0)
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in finished.signal() }
         do { try process.run() } catch { return nil }
+        // tmux output here is small; it fits the pipe buffer while we wait.
+        guard finished.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            return nil
+        }
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }

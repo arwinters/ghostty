@@ -137,8 +137,9 @@ def main():
 
     if not args.skip_core:
         run([args.zig, "build", "-Doptimize=ReleaseFast", "-Demit-macos-app=false"], cwd=REPO)
-    if not (REPO / "macos/GhosttyKit.xcframework").exists():
-        sys.exit("macos/GhosttyKit.xcframework is missing; run without --skip-core.")
+    for required in ("macos/GhosttyKit.xcframework", "zig-out/share"):
+        if not (REPO / required).exists():
+            sys.exit(f"{required} is missing; run without --skip-core to build the core first.")
 
     build = Path(args.build_dir)
     # Fresh sources every time; keep the Xcode build folder for incremental builds.

@@ -57,7 +57,7 @@ struct StatusPluginBar: View {
     /// tmux session and its active pane's directory, for panes opened by the tmux plugin.
     private struct TmuxLocation: View {
         let pane: TmuxPane
-        @StateObject private var model = TmuxLocationModel()
+        @ObservedObject private var tmux = TmuxPlugin.shared
 
         private var name: String {
             pane.session.hasPrefix(TmuxCommand.sessionPrefix)
@@ -65,7 +65,7 @@ struct StatusPluginBar: View {
         }
 
         var body: some View {
-            let path = (model.path ?? pane.directory) as NSString
+            let path = (tmux.paths[pane.session] ?? pane.directory) as NSString
             HStack(spacing: 6) {
                 Label("tmux", systemImage: "rectangle.split.3x1")
                     .foregroundColor(Color(red: 0.31, green: 0.98, blue: 0.48))
@@ -78,41 +78,7 @@ struct StatusPluginBar: View {
             .frame(maxWidth: 380, alignment: .leading)
             .help("tmux session \(pane.session) · \(path)\nDetach: Ctrl-b d, or right-click › tmux › Detach Session")
             .accessibilityElement(children: .combine)
-            .onAppear { model.track(pane.session) }
-            .onChange(of: pane.session) { model.track($0) }
-            .onDisappear { model.stop() }
         }
-    }
-
-    private final class TmuxLocationModel: ObservableObject {
-        @Published var path: String?
-        private var timer: Timer?
-        private var session = ""
-
-        func track(_ session: String) {
-            self.session = session
-            timer?.invalidate()
-            refresh()
-            timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
-        }
-
-        func stop() {
-            timer?.invalidate()
-            timer = nil
-        }
-
-        private func refresh() {
-            let session = session
-            DispatchQueue.global(qos: .utility).async {
-                let path = TmuxPlugin.shared.currentPath(session)
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.session == session, let path, path != self.path else { return }
-                    self.path = path
-                }
-            }
-        }
-
-        deinit { timer?.invalidate() }
     }
 
     private func items(_ placement: StatusPluginPlacement) -> [StatusPluginHost.Item] {

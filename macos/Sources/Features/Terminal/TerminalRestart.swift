@@ -18,11 +18,12 @@ extension BaseTerminalController {
 
         // tmux panes reattach to their session; the program inside keeps running.
         let tmux = TmuxPlugin.shared.pane(for: old.id)
+        let inherited = Ghostty.SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
         var config: Ghostty.SurfaceConfiguration
         if let tmux {
-            config = TmuxPlugin.shared.surfaceConfiguration(for: tmux)
+            config = TmuxPlugin.shared.surfaceConfiguration(for: tmux, fontSize: inherited.fontSize)
         } else {
-            config = Ghostty.SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
+            config = inherited
             // Start the default shell, not a one-off command or session replay wrapper.
             config.command = nil
             config.environmentVariables = [:]
@@ -31,17 +32,19 @@ extension BaseTerminalController {
             if let pwd = old.pwd, pwd.hasPrefix("/") { config.workingDirectory = pwd }
         }
 
-        let foreground = pid_t(truncatingIfNeeded: ghostty_surface_foreground_pid(surface))
-        TerminalProcesses.terminate(sharingTerminalWith: foreground)
-
+        // Build the new tree first: if that fails, the old pane is left untouched.
         let replacement = Ghostty.SurfaceView(app, baseConfig: config)
-        if let tmux { TmuxPlugin.shared.register(replacement, as: tmux) }
+        let newTree: SplitTree<Ghostty.SurfaceView>
         do {
-            surfaceTree = try surfaceTree.replacing(node: node, with: .leaf(view: replacement))
+            newTree = try surfaceTree.replacing(node: node, with: .leaf(view: replacement))
         } catch {
             AppDelegate.logger.error("restart terminal failed: \(error.localizedDescription, privacy: .public)")
             return
         }
+        let foreground = pid_t(truncatingIfNeeded: ghostty_surface_foreground_pid(surface))
+        TerminalProcesses.terminate(sharingTerminalWith: foreground)
+        surfaceTree = newTree
+        if let tmux { TmuxPlugin.shared.register(replacement, as: tmux) }
         TmuxPlugin.shared.forget(old.id)
         Ghostty.moveFocus(to: replacement, from: old)
     }

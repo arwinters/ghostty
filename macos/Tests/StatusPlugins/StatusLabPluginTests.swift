@@ -34,6 +34,19 @@ struct StatusLabPluginTests {
         #expect(loaded.plugins[3].placement == .leading)
     }
 
+    @Test func duplicateCustomIdsDoNotBreakTheManifest() throws {
+        var settings = StatusLabPluginSettings()
+        settings.custom = [.init(id: "dup", executable: "/bin/echo", arguments: ["a", "", "b"]),
+                           .init(id: "dup", executable: "/bin/cat")]
+        let manifest = settings.manifest(helpers: helpers, interface: "en0", locale: "en")
+        #expect(manifest.plugins.filter { $0.id == "dup" }.count == 1)
+        #expect(manifest.plugins.last?.arguments == ["a", "b"])
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try JSONEncoder().encode(manifest).write(to: file)
+        #expect(try StatusPluginManifest.load(file.path).plugins.count == 4)
+    }
+
     @Test func invalidCustomPluginsAreSkippedAndTotalIsCapped() {
         var settings = StatusLabPluginSettings()
         settings.custom = [
@@ -111,8 +124,9 @@ struct StatusLabPluginTests {
         #expect(command.hasPrefix("/bin/sh -c "))
         // Unwrap the quoting layers like the shells would and check the final script.
         let outer = try #require(Self.unquote(String(command.dropFirst("/bin/sh -c ".count))))
-        #expect(outer.hasPrefix("exec '/bin/zsh' -lic "))
-        let script = try #require(Self.unquote(String(outer.dropFirst("exec '/bin/zsh' -lic ".count))))
+        // The login shell only runs a fish-compatible exec of /bin/sh with the script.
+        #expect(outer.hasSuffix(" exec '/bin/zsh' -lic 'exec /bin/sh -c \"$GHOSTTY_TMUX_SCRIPT\"'"))
+        let script = try #require(Self.script(of: command))
         #expect(script.contains("has-session -t '=ghostty-claude-ab12'"))
         #expect(script.contains("attach-session -t '=ghostty-claude-ab12'"))
         #expect(script.contains("-c '/Users/me/it'\"'\"'s here'"))
@@ -122,8 +136,7 @@ struct StatusLabPluginTests {
     @Test func tmuxStatusBarIsHiddenOnlyForThisSession() throws {
         let command = TmuxCommand.surfaceCommand(tmux: "tmux", shell: "/bin/zsh", session: "ghostty-a-1",
                                                  directory: "/tmp", command: "claude", hideStatus: true)
-        let outer = try #require(Self.unquote(String(command.dropFirst("/bin/sh -c ".count))))
-        let script = try #require(Self.unquote(String(outer.dropFirst("exec '/bin/zsh' -lic ".count))))
+        let script = try #require(Self.script(of: command))
         #expect(script.contains("'tmux' set-option -t '=ghostty-a-1:' status off 2>/dev/null; exec 'tmux' attach-session"))
         #expect(script.contains("' ';' set-option status off; fi"))
         #expect(!script.contains("-g"))
@@ -163,12 +176,23 @@ struct StatusLabPluginTests {
         #expect(TmuxCommand.expand(directory: "/srv", home: "/Users/me") == "/srv")
     }
 
+    /// The /bin/sh script a surface command hands to the login shell, as /bin/sh sees it.
+    static func script(of command: String) -> String? {
+        guard let outer = unquote(String(command.dropFirst("/bin/sh -c ".count))),
+              let exec = outer.range(of: " exec '/bin/zsh' -lic ", options: .backwards) else { return nil }
+        return run("/bin/sh", ["-c", outer[..<exec.lowerBound] + "; printf %s \"$GHOSTTY_TMUX_SCRIPT\""])
+    }
+
     /// Lets a real shell remove one level of quoting from a single quoted word.
     static func unquote(_ word: String) -> String? {
+        run("/bin/sh", ["-c", "printf %s " + word])
+    }
+
+    static func run(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
         let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "printf %s " + word]
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
         process.standardOutput = output
         guard (try? process.run()) != nil else { return nil }
         let data = output.fileHandleForReading.readDataToEndOfFile()

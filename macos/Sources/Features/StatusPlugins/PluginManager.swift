@@ -503,9 +503,8 @@ private struct CustomSection: View {
             Text("Any executable that writes status protocol v1 to stdout can be added. Plugins run as normal processes with your permissions; only add programs you trust.")
                 .foregroundStyle(.secondary)
         }
-        // Indexed: the identifier itself is editable, so it cannot be the row identity.
-        ForEach(plugins.indices, id: \.self) { index in
-            let plugin = $plugins[index]
+        // Rows use a stable key: the identifier itself is editable.
+        ForEach($plugins, id: \.key) { plugin in
             Section {
                 Toggle("Enabled", isOn: plugin.enabled)
                 TextField("Identifier", text: plugin.id)
@@ -519,15 +518,22 @@ private struct CustomSection: View {
                 }
                 TextField("Arguments", text: Binding(
                     get: { plugin.wrappedValue.arguments.joined(separator: " ") },
-                    set: { plugin.wrappedValue.arguments = $0.split(separator: " ").map(String.init) }))
+                    // Keep empty parts while typing so a space can be entered; the
+                    // manifest drops them.
+                    set: { plugin.wrappedValue.arguments = $0.split(separator: " ", omittingEmptySubsequences: false)
+                        .map(String.init) }))
                 PositionPicker(position: plugin.position)
-                if !StatusLabPluginSettings.isValid(plugin.wrappedValue) {
+                if !StatusLabPluginSettings.isValid(plugin.wrappedValue) ||
+                    plugins.filter({ $0.id == plugin.wrappedValue.id }).count > 1 {
                     Text("Needs a unique identifier and an absolute executable path.")
                         .foregroundStyle(.orange)
                 }
                 HStack {
                     Spacer()
-                    Button("Remove", role: .destructive) { plugins.remove(at: index) }
+                    Button("Remove", role: .destructive) {
+                        let key = plugin.wrappedValue.key
+                        plugins.removeAll { $0.key == key }
+                    }
                 }
             } header: {
                 Text(plugin.wrappedValue.id.isEmpty ? "Plugin" : plugin.wrappedValue.id)
@@ -535,7 +541,7 @@ private struct CustomSection: View {
         }
         Section {
             Button("Add Plugin") {
-                plugins.append(.init(id: "plugin-\(plugins.count + 1)", executable: ""))
+                plugins.append(.init(id: "plugin-" + String(UUID().uuidString.prefix(4)).lowercased(), executable: ""))
             }
         } footer: {
             Text("At most eight plugins run at the same time, built-in ones included. Arguments are split on spaces; no shell expansion.")

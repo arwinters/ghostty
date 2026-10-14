@@ -23,13 +23,21 @@ enum StatusLabBootstrap {
                 try (defaults + "\n# Generated plugin paths for this copy of the app\nconfig-file = \(runtime.path)\n")
                     .write(to: config, atomically: true, encoding: .utf8)
             }
-            // Migrate only the fixed titles supplied by earlier Status Lab builds.
-            let contents = try String(contentsOf: config, encoding: .utf8)
-            let migrated = contents.replacingOccurrences(of: "window-save-state = never", with: "window-save-state = always").components(separatedBy: "\n").filter {
+            // Migrate only what earlier Status Lab builds wrote: fixed titles, and (once)
+            // window-save-state = never, which predates the Session Manager. Afterwards
+            // "never" is the user's way to turn session restore off and must stay.
+            var contents = try String(contentsOf: config, encoding: .utf8)
+            let original = contents
+            let saveStateKey = "StatusLabMigratedWindowSaveState"
+            if !UserDefaults.standard.bool(forKey: saveStateKey) {
+                contents = contents.replacingOccurrences(of: "window-save-state = never", with: "window-save-state = always")
+                UserDefaults.standard.set(true, forKey: saveStateKey)
+            }
+            let migrated = contents.components(separatedBy: "\n").filter {
                 !["title = Ghostty Status Lab", "title = Ghostty Dev Version"].contains(
                     $0.trimmingCharacters(in: .whitespaces))
             }.joined(separator: "\n")
-            if migrated != contents {
+            if migrated != original {
                 try migrated.write(to: config, atomically: true, encoding: .utf8)
             }
             return config.path

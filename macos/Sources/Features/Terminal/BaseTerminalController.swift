@@ -889,12 +889,14 @@ class BaseTerminalController: NSWindowController,
            surfaceTree.contains(titleSurface) {
             // If we have a surface, we want to listen for title changes.
             titleSurface.$title
-                .combineLatest(titleSurface.$bell, titleSurface.$pwd)
-                .map { [weak self] title, bell, pwd in
+                .combineLatest(titleSurface.$bell, titleSurface.$pwd, TmuxPlugin.shared.$paths)
+                .map { [weak self, weak titleSurface] title, bell, pwd, _ in
                     guard let self else { return "" }
                     // Status Lab follows the active pane's directory, even when a
-                    // foreground program supplies its own terminal title.
+                    // foreground program supplies its own terminal title. tmux panes
+                    // do not report one; their directory comes from tmux.
                     let directory = pwd.flatMap { $0.isEmpty ? nil : $0 }
+                        ?? titleSurface.flatMap { TmuxPlugin.shared.path(for: $0.id) }
                     let displayTitle = self.ghostty.config.statusPluginsManifest != nil
                         ? directory.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? title
                         : title

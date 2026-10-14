@@ -33,6 +33,13 @@ final class SessionManager: NSObject, ObservableObject {
     private override init() {
         store = SessionStore(directory: PluginManager.supportDirectory.appendingPathComponent("sessions"))
         super.init()
+        // Replay files are read once by the shells of the previous launch's restore. They
+        // contain plain terminal output, so do not keep them around.
+        if let entries = try? FileManager.default.contentsOfDirectory(at: store.directory, includingPropertiesForKeys: nil) {
+            for entry in entries where entry.lastPathComponent.hasPrefix("replay-") {
+                try? FileManager.default.removeItem(at: entry)
+            }
+        }
         do {
             sessions = try store.list()
             launchSnapshot = sessions.first(where: { $0.name == nil })
@@ -66,7 +73,11 @@ final class SessionManager: NSObject, ObservableObject {
         var recovery = snapshot
         recovery.id = UUID()
         recovery.name = SessionSnapshot.recoveryPrefix + Date().formatted(date: .numeric, time: .shortened)
-        do { try store.save(recovery) } catch { report(error); return false }
+        do {
+            try store.save(recovery)
+            // Recovery points are named, so the automatic rotation skips them; keep 10.
+            for old in try store.list().filter(\.isRecoveryPoint).dropFirst(10) { try store.delete(old.id) }
+        } catch { report(error); return false }
         return restore(snapshot)
     }
 

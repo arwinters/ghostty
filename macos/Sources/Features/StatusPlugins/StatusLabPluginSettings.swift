@@ -68,6 +68,12 @@ struct StatusLabPluginSettings: Codable, Equatable {
         var arguments: [String] = []
         var enabled = true
         var position = Position.leading
+        /// Stable row identity for the editor (the id itself is editable); not saved.
+        var key = UUID()
+
+        private enum CodingKeys: String, CodingKey {
+            case id, executable, arguments, enabled, position
+        }
     }
 
     var stats = Stats()
@@ -119,9 +125,12 @@ struct StatusLabPluginSettings: Codable, Equatable {
                                  arguments: ["--template", clock.effectiveTemplate, "--locale", locale],
                                  position: clock.position.rawValue))
         }
-        for plugin in custom where plugin.enabled && Self.isValid(plugin) {
+        // Duplicate ids would make the host reject the whole manifest; keep the first.
+        var seen = Set(plugins.map(\.id))
+        for plugin in custom where plugin.enabled && Self.isValid(plugin) && seen.insert(plugin.id).inserted {
             plugins.append(.init(id: plugin.id, executable: plugin.executable,
-                                 arguments: plugin.arguments, position: plugin.position.rawValue))
+                                 arguments: plugin.arguments.filter { !$0.isEmpty },
+                                 position: plugin.position.rawValue))
         }
         // The host accepts at most eight plugins.
         return Manifest(plugins: Array(plugins.prefix(8)))
@@ -190,9 +199,10 @@ enum TmuxCommand {
     }
 
     /// The command for a Ghostty surface that attaches to `session` when it is still alive
-    /// and otherwise creates it in `directory`, running `command`. Everything runs through
-    /// the user's login shell so tmux and tools such as `claude` are found on its PATH.
-    /// When the command exits, the pane keeps a login shell instead of closing.
+    /// and otherwise creates it in `directory`, running `command`. The user's login shell
+    /// only provides the environment (so tools such as `claude` are on its PATH); the
+    /// attach-or-create logic itself always runs in /bin/sh, so it also works when the
+    /// login shell is fish. When the command exits, the pane keeps a login shell.
     ///
     /// With `hideStatus`, the session's own tmux status line is turned off (session option,
     /// so the user's other sessions and configuration are not affected).
@@ -206,8 +216,13 @@ enum TmuxCommand {
         let script = "if \(quote(tmux)) has-session -t \(target) 2>/dev/null; " +
             "then \(hideExisting)exec \(quote(tmux)) attach-session -t \(target); " +
             "else exec \(quote(tmux)) new-session -s \(quote(session)) -c \(quote(directory)) \(quote(inner))\(hideNew); fi"
-        return "/bin/sh -c " + quote("exec " + quote(shell) + " -lic " + quote(script))
+        // The script travels in an environment variable: `exec /bin/sh -c "$VAR"` is valid
+        // in sh, bash, zsh and fish alike.
+        return "/bin/sh -c " + quote("\(scriptVariable)=" + quote(script) + " exec " + quote(shell) +
+                                     " -lic " + quote("exec /bin/sh -c \"$\(scriptVariable)\""))
     }
+
+    static let scriptVariable = "GHOSTTY_TMUX_SCRIPT"
 
     static func expand(directory: String, home: String) -> String {
         if directory == "~" { return home }
