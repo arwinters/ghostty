@@ -12,6 +12,10 @@ struct TerminalTabStrip: View {
     private let newTabWidth: CGFloat = 28
 
     var body: some View {
+        if model.visible { strip }
+    }
+
+    private var strip: some View {
         GeometryReader { geometry in
             HStack(spacing: spacing) {
                 ForEach(model.tabs) { tab in

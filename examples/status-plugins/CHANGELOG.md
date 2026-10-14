@@ -1,5 +1,13 @@
 # Status Lab changelog
 
+## 0.8.3 — 2026-10-14
+
+- Fix (regression from 0.4.0): in native fullscreen the tab strip stayed visible and the
+  revealed macOS titlebar slid over the terminal text transparently. In fullscreen the
+  strip now steps aside and the native tab bar returns, so tabs are hidden and appear
+  with the menu bar when the pointer reaches the top. The revealed titlebar uses the
+  terminal background again. Outside fullscreen nothing changes.
+
 ## 0.8.2 — 2026-10-14
 
 - Tab titles of tmux panes show the session's directory (from tmux) instead of the bare

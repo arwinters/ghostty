@@ -41,7 +41,7 @@ differently, if any of it is ever considered for Ghostty itself.
 | Session Manager | Saves windows, tabs, splits, ratios, focused pane, directories, titles, font size and the last 128K characters of output every 5 seconds, before sleep and when quitting. Restores them at launch, also after a crash. Named workspaces can be saved and restored. | Sessions menu, ⇧⌘S, or the Sessions button |
 | tmux panes | Profiles (default: Claude, `claude`) open a tmux session in a directory you choose, as a split or tab. Detached sessions can be reattached. After a crash the session is still running and is reattached; after a restart it is recreated with a resume command (`claude --continue`). tmux's own status line is hidden for these sessions only. | Right-click a pane › tmux |
 | Restart Terminal | Stops every process attached to the pane's terminal and starts a new shell in the same place, directory and font size. | Right-click a stuck pane › Restart Terminal… |
-| Tab strip | Compact tabs for `macos-titlebar-style = tabs` that keep a sensible width and blend with the background, also in fullscreen. | Top of the window |
+| Tab strip | Compact tabs for `macos-titlebar-style = tabs` that keep a sensible width and blend with the background. In fullscreen the native tabs appear with the menu bar when you move the pointer to the top. | Top of the window |
 | Close confirmation | Closing a tab or window with more than one pane always asks first. | Tab close button, Close Tab, window close button |
 
 ## Design choices

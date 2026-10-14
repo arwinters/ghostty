@@ -5,8 +5,10 @@ import SwiftUI
 ///
 /// Native tabbing (tab groups, keyboard shortcuts, session restore) is kept as is, but the
 /// native NSTabBar is hidden. Instead `TerminalView` draws a compact tab strip in the
-/// transparent titlebar area. The strip lives in the content view, so it also stays visible
-/// in native fullscreen and blends with the terminal background.
+/// transparent titlebar area, blending with the terminal background.
+///
+/// In native fullscreen the strip steps aside and the native tab bar returns: macOS then
+/// hides the tabs and reveals them, with the menu bar, when the pointer reaches the top.
 class StripTabsTerminalWindow: TransparentTitlebarTerminalWindow {
     let tabStrip = TerminalTabStripModel()
 
@@ -30,8 +32,12 @@ class StripTabsTerminalWindow: TransparentTitlebarTerminalWindow {
                            name: .terminalTabStripNeedsRefresh, object: nil)
         center.addObserver(self, selector: #selector(windowWillCloseSomewhere(_:)),
                            name: NSWindow.willCloseNotification, object: nil)
+        center.addObserver(self, selector: #selector(willEnterFullScreen),
+                           name: NSWindow.willEnterFullScreenNotification, object: self)
+        center.addObserver(self, selector: #selector(willExitFullScreen),
+                           name: NSWindow.willExitFullScreenNotification, object: self)
         for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
-            center.addObserver(self, selector: #selector(tabStripNeedsRefresh), name: name, object: self)
+            center.addObserver(self, selector: #selector(fullScreenDidChange), name: name, object: self)
         }
         scheduleTabStripRefresh()
     }
@@ -68,10 +74,14 @@ class StripTabsTerminalWindow: TransparentTitlebarTerminalWindow {
 
     override func syncAppearance(_ surfaceConfig: Ghostty.SurfaceView.DerivedConfig) {
         super.syncAppearance(surfaceConfig)
+        lastStripConfig = surfaceConfig
 
         // The titlebar is layered above the content. It must stay clear so the strip
-        // underneath it is visible; the strip paints the background itself.
-        if let titlebarView = titlebarContainer?.firstDescendant(withClassName: "NSTitlebarView") {
+        // underneath it is visible; the strip paints the background itself. In fullscreen
+        // the revealed titlebar keeps the terminal background (set by super), otherwise it
+        // would slide over the terminal text transparently.
+        if !inNativeFullScreen,
+           let titlebarView = titlebarContainer?.firstDescendant(withClassName: "NSTitlebarView") {
             titlebarView.wantsLayer = true
             titlebarView.layer?.backgroundColor = NSColor.clear.cgColor
         }
@@ -89,14 +99,49 @@ class StripTabsTerminalWindow: TransparentTitlebarTerminalWindow {
     override func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
         super.addTitlebarAccessoryViewController(childViewController)
         if isTabBar(childViewController) {
-            childViewController.isHidden = true
+            childViewController.isHidden = !inNativeFullScreen
         }
     }
 
+    /// Native tabs are hidden while the strip is shown, and used in fullscreen.
     private func hideNativeTabBar() {
+        for controller in titlebarAccessoryViewControllers where isTabBar(controller) {
+            controller.isHidden = !inNativeFullScreen
+        }
+    }
+
+    // MARK: Fullscreen
+
+    private var lastStripConfig: Ghostty.SurfaceView.DerivedConfig?
+    private var enteringFullScreen = false
+
+    /// Also true during the enter animation, so the strip leaves before the window grows.
+    private var inNativeFullScreen: Bool { enteringFullScreen || styleMask.contains(.fullScreen) }
+
+    @objc private func willEnterFullScreen() {
+        enteringFullScreen = true
+        applyFullScreenState()
+    }
+
+    @objc private func willExitFullScreen() {
+        enteringFullScreen = false
+        // Bring the strip back as the window leaves fullscreen.
+        tabStrip.setVisible(true)
         for controller in titlebarAccessoryViewControllers where isTabBar(controller) {
             controller.isHidden = true
         }
+    }
+
+    @objc private func fullScreenDidChange() {
+        enteringFullScreen = false
+        applyFullScreenState()
+    }
+
+    private func applyFullScreenState() {
+        tabStrip.setVisible(!inNativeFullScreen)
+        hideNativeTabBar()
+        if let lastStripConfig { syncAppearance(lastStripConfig) }
+        scheduleTabStripRefresh()
     }
 
     // MARK: Refresh
@@ -192,8 +237,14 @@ final class TerminalTabStripModel: ObservableObject {
     @Published private(set) var tabs: [Tab] = []
     @Published private(set) var layout = Layout(height: 32, leadingInset: 78)
     @Published private(set) var isKey = false
+    /// False in native fullscreen, where the native tab bar takes over.
+    @Published private(set) var visible = true
 
     fileprivate weak var window: StripTabsTerminalWindow?
+
+    fileprivate func setVisible(_ value: Bool) {
+        if visible != value { visible = value }
+    }
 
     fileprivate func update(tabs: [Tab], layout: Layout, isKey: Bool) {
         if self.tabs != tabs { self.tabs = tabs }
