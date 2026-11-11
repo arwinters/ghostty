@@ -19,6 +19,7 @@ conversation about which of these ideas could fit Ghostty.
 | **tmux panes** | Sessions that keep running when Ghostty quits or crashes, can be attached from any terminal, and come back with their history after a restart. |
 | **AI sessions** | Right-click a pane › New AI Session › Claude Code, Codex or any tool you configure, in that pane's directory, in a tmux session. A missing tool installs with Homebrew from the menu, with live progress. |
 | **Context menu** | Right-click (also inside tmux): copy and paste, splits and tabs, the pane's directory, tmux, AI sessions, workspaces. |
+| **Screenshots** | Right-click › Screenshot › This Pane, This Tab or This Window. Drawn by Ghostty itself (no screen recording permission), plain or framed with rounded corners and a backdrop, copied and saved as PNG. |
 | **Restart Terminal** | Revive a hung pane without closing the window: stops everything on its terminal and starts a fresh shell in the same place. |
 | **Tab strip** | Compact tabs that blend with the background; drag to reorder; hidden with the menu bar in fullscreen. |
 

@@ -421,11 +421,20 @@ final class TmuxPlugin: ObservableObject {
 
         header("New Session")
         let profiles = PluginManager.shared.settings.tmux.profiles
-        if profiles.isEmpty { header("No profiles; add one in the Plugin Manager") }
         for profile in profiles {
             let item = menu.addItem(withTitle: profile.name, action: nil, keyEquivalent: "")
             item.toolTip = "\(profile.command) in \(profile.directory)"
             item.submenu = placements { .init(source: view, placement: $0, action: .open(profile)) }
+        }
+        // The AI tools of the configuration are tmux sessions too; skip one a profile
+        // already starts (the default Claude profile and the Claude Code tool).
+        let profileCommands = Set(profiles.map { $0.command.trimmingCharacters(in: .whitespaces) })
+        let directory = view.contextDirectory
+        for session in AISessions.shared.sessions where !profileCommands.contains(session.command) {
+            menu.addItem(AISessions.shared.item(for: session, source: view, directory: directory))
+        }
+        if profiles.isEmpty && AISessions.shared.sessions.isEmpty {
+            header("No profiles; add one in the Plugin Manager")
         }
 
         menu.addItem(.separator())

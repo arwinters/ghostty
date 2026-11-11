@@ -347,6 +347,7 @@ class AppDelegate: NSObject,
         setupMenuImages()
         SessionManager.shared.start()
         PluginManager.shared.start()
+        Screenshots.captureForTestIfRequested()
 
         // Setup signal handlers
         setupSignals()

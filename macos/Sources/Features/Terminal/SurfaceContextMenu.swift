@@ -98,6 +98,7 @@ extension Ghostty.SurfaceView {
 
         // Terminal
         menu.addItem(.separator())
+        if PluginManager.enabled { menu.addItem(screenshotMenuItem()) }
         add("Restart Terminal…", #selector(restartTerminal(_:)), symbol: "arrow.clockwise.circle",
             tip: "For a stuck pane: stops every program in this pane and starts a new shell in the same directory.")
         add("Clear Garbled Screen", #selector(resetTerminal(_:)), symbol: "eraser",

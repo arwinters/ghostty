@@ -1,5 +1,17 @@
 # Status Lab changelog
 
+## 0.9.4 — 2026-11-11
+
+- Screenshots: right-click a pane › Screenshot › This Pane, This Tab or This Window.
+  Ghostty draws them itself (terminal pixels from the renderer, the rest of the window
+  from its views), so no screen recording permission is needed and no other window or
+  menu ends up in the picture. Plain, or framed with rounded corners, a shadow and a
+  backdrop (Ghostty Blue, Dusk, Graphite, transparent) with an adjustable margin.
+  Copied to the clipboard and saved as PNG in ~/Pictures/Ghostty; a preview window has
+  Copy, Save As, Show in Finder and drag and drop.
+- tmux › New Session also lists the configured AI tools (for example Codex), next to the
+  tmux profiles.
+
 ## 0.9.3 — 2026-11-11
 
 - Tabs in the tab strip can be dragged to a new position; the tabs they pass make room.
