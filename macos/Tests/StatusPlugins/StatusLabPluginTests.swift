@@ -223,6 +223,35 @@ struct StatusLabPluginTests {
         #expect(script.contains("'claude --continue; exec '\"'\"'/bin/zsh'\"'\"' -l'"))
     }
 
+    @Test func recreatedTmuxSessionsShowTheSavedHistoryFirst() throws {
+        let command = TmuxCommand.surfaceCommand(tmux: "/opt/homebrew/bin/tmux", shell: "/bin/zsh",
+                                                 session: "ghostty-claude-ab12", directory: "/tmp",
+                                                 command: "claude --continue", replay: "/tmp/it's/replay")
+        let script = try #require(Self.script(of: command))
+        // Only the create branch replays; attaching shows tmux's own history.
+        let create = try #require(script.components(separatedBy: "else ").last)
+        let cat = try #require(create.range(of: "/bin/cat"))
+        let resume = try #require(create.range(of: "claude --continue"))
+        #expect(cat.lowerBound < resume.lowerBound)
+        #expect(create.contains("s/replay"))
+        #expect(!(script.components(separatedBy: "else ").first ?? "").contains("/bin/cat"))
+        let plain = try #require(Self.script(of: TmuxCommand.surfaceCommand(
+            tmux: "tmux", shell: "/bin/zsh", session: "ghostty-a-1", directory: "/tmp", command: "claude")))
+        #expect(!plain.contains("/bin/cat"))
+    }
+
+    @Test func tmuxServerRunsAsALaunchdJobInTheLoginEnvironment() throws {
+        let job = TmuxCommand.serverJob(label: "com.example.lab.tmux-server", tmux: "/opt/homebrew/bin/tmux",
+                                        shell: "/bin/zsh", home: "/Users/me", language: "nl_NL.UTF-8")
+        #expect(job["Label"] as? String == "com.example.lab.tmux-server")
+        #expect(job["ProgramArguments"] as? [String] == ["/bin/zsh", "-lc", "exec '/opt/homebrew/bin/tmux' -D"])
+        #expect(job["KeepAlive"] as? Bool == false)
+        #expect((job["EnvironmentVariables"] as? [String: String])?["SHELL"] == "/bin/zsh")
+        // launchd accepts it as a property list.
+        _ = try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0)
+        #expect(TmuxCommand.attachCommand(session: "ghostty-claude-ab12") == "tmux attach -t ghostty-claude-ab12")
+    }
+
     @Test func tmuxStatusBarIsHiddenOnlyForThisSession() throws {
         let command = TmuxCommand.surfaceCommand(tmux: "tmux", shell: "/bin/zsh", session: "ghostty-a-1",
                                                  directory: "/tmp", command: "claude", hideStatus: true)

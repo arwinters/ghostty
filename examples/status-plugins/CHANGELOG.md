@@ -1,5 +1,18 @@
 # Status Lab changelog
 
+## 0.9.1 — 2026-11-11
+
+- tmux runs on its own: when no tmux server is running, Ghostty starts it as a launchd
+  job of the user (`tmux -D`, in the login environment) instead of from a pane. Quitting,
+  a crash or a Force Quit of Ghostty only detaches; sessions and programs such as Claude
+  keep running and can be attached from any terminal.
+- Quitting no longer asks for confirmation when only tmux panes are busy, so Ghostty
+  quits instead of waiting in the Dock.
+- tmux history is saved: the visible screen with regular checkpoints, the last 3000
+  lines when quitting and before sleep. A session that ended with a restart comes back
+  with that history above the resume command instead of an empty pane.
+- Copy Attach Command in the pane's tmux menu and in the Plugin Manager.
+
 ## 0.9.0 — 2026-11-11
 
 - Based on the latest Ghostty `main` (709 upstream commits since 0.8.4); Zig 0.17.

@@ -278,9 +278,10 @@ final class SessionManager: NSObject, ObservableObject, NSMenuDelegate {
                 } ?? 0)
             }
             let size = fontSizes[view.id]?.1 ?? 0
-            // tmux keeps its own scrollback; saving the screen of a tmux pane adds nothing.
+            // A tmux pane is saved from tmux itself: Ghostty's screen holds only what the
+            // client drew since it attached, not the session's history.
             let tmux = TmuxPlugin.shared.snapshotPane(for: view.id)
-            let transcript = tmux == nil ? self.transcript(of: view, depth) : ""
+            let transcript = tmux.map { self.transcript(of: $0, depth) } ?? self.transcript(of: view, depth)
             // Programs animate their titles (spinners); only a custom title is layout.
             let title = depth == .layout && !view.sessionHasCustomTitle ? "" : view.title
             return .pane(.init(id: view.id, directory: SessionSnapshot.safeDirectory(view.pwd), title: title,
@@ -302,6 +303,11 @@ final class SessionManager: NSObject, ObservableObject, NSMenuDelegate {
         case .full:
             return SessionSnapshot.safeTranscript(view.cachedScreenContents.get())
         }
+    }
+
+    private func transcript(of pane: TmuxPane, _ depth: Depth) -> String {
+        guard saveOutput, depth != .layout else { return "" }
+        return SessionSnapshot.safeTranscript(TmuxPlugin.shared.capture(pane.session, history: depth == .full))
     }
 
     /// The rows of the active screen only, never the scrollback above it.
@@ -458,9 +464,12 @@ final class SessionManager: NSObject, ObservableObject, NSMenuDelegate {
             let replay = store.directory.appendingPathComponent("replay-" + UUID().uuidString)
             try FileManager.default.createDirectory(at: replay, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
-            for pane in snapshot.windows.flatMap({ $0.tree.panes }) where pane.tmux == nil {
+            for pane in snapshot.windows.flatMap({ $0.tree.panes }) {
                 let saved = SessionSnapshot.safeTranscript(pane.transcript)
-                let text = saved + (saved.isEmpty ? "" : "\n") + "— Restored session · new shell —\n"
+                // A tmux pane uses its file only when the session has to be recreated.
+                if pane.tmux != nil && saved.isEmpty { continue }
+                let marker = pane.tmux == nil ? "— Restored session · new shell —" : "— Restored history · the tmux session had ended —"
+                let text = saved + (saved.isEmpty ? "" : "\n") + marker + "\n"
                 try text.write(to: replay.appendingPathComponent(pane.id.uuidString), atomically: true, encoding: .utf8)
             }
             let skip: Set<String> = skipOpenTmux ? TmuxPlugin.shared.shownSessions : []
@@ -529,8 +538,11 @@ final class SessionManager: NSObject, ObservableObject, NSMenuDelegate {
                     skipped += 1
                     return nil
                 }
-                // Reattaches when tmux survived (app crash); recreates it after a restart.
-                let view = TmuxPlugin.shared.restoreView(tmux, app: app, fontSize: pane.fontSize)
+                // Reattaches when tmux survived; recreates it, with the saved history, after a restart.
+                let file = replay.appendingPathComponent(pane.id.uuidString)
+                let view = TmuxPlugin.shared.restoreView(
+                    tmux, app: app, fontSize: pane.fontSize,
+                    replay: FileManager.default.fileExists(atPath: file.path) ? file.path : nil)
                 view.sessionRestoreTitle(pane.title, custom: pane.customTitle)
                 views[pane.id] = view
                 return .leaf(view: view)

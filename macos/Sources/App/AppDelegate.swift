@@ -437,6 +437,9 @@ class AppDelegate: NSObject,
         // If our app says we don't need to confirm, we can exit now.
         if !ghostty.needsConfirmQuit { return .terminateNow }
 
+        // Status Lab: quitting only detaches tmux panes; their sessions keep running.
+        if TmuxPlugin.shared.onlyTmuxPanesAreBusy { return .terminateNow }
+
         return terminate()
     }
 

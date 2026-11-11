@@ -4,10 +4,13 @@ import GhosttyKit
 /// Opens tmux sessions in Ghostty panes from a profile (for example a Claude Code session)
 /// and remembers which pane belongs to which session, so the Session Manager can restore it.
 ///
-/// tmux runs its server outside Ghostty. After an app crash the session, including the
-/// program inside it, is still running and a restored pane simply reattaches. After a
-/// restart or shutdown the session is gone; the pane then recreates it with the profile's
-/// resume command (for Claude: `claude --continue`).
+/// The tmux server runs as a launchd job of the user (`tmux -D`), started by Ghostty when no
+/// server is running. It is therefore not part of Ghostty's processes: quitting, a crash or
+/// a Force Quit of Ghostty only ends the tmux clients in its panes. The sessions, including
+/// programs such as Claude, keep running, can be attached from any terminal, and a restored
+/// pane simply reattaches. After a restart or shutdown the server is gone; the pane then
+/// recreates the session with the saved history above the profile's resume command (for
+/// Claude: `claude --continue`).
 final class TmuxPlugin: ObservableObject {
     static let shared = TmuxPlugin()
 
@@ -157,15 +160,88 @@ final class TmuxPlugin: ObservableObject {
 
     func forget(_ id: UUID) { panes.removeValue(forKey: id) }
 
-    private func configuration(_ pane: TmuxPane, command: String, fontSize: Float? = nil) -> Ghostty.SurfaceConfiguration {
+    private func configuration(_ pane: TmuxPane, command: String, fontSize: Float? = nil,
+                               replay: String? = nil) -> Ghostty.SurfaceConfiguration {
+        ensureServer()
         var config = Ghostty.SurfaceConfiguration()
         config.workingDirectory = pane.directory
         config.fontSize = fontSize
         config.command = TmuxCommand.surfaceCommand(
             tmux: tmuxPath ?? "tmux", shell: shell, session: pane.session,
             directory: pane.directory, command: command,
-            hideStatus: PluginManager.shared.settings.tmux.hideStatusBar)
+            hideStatus: PluginManager.shared.settings.tmux.hideStatusBar, replay: replay)
         return config
+    }
+
+    // MARK: Server
+
+    private var serverLabel: String {
+        (Bundle.main.bundleIdentifier ?? "com.arwinters.ghostty.statuslab") + ".tmux-server"
+    }
+
+    /// Starts the tmux server as a launchd job when none is running, so it never belongs to
+    /// Ghostty's processes. A running server is left alone, whoever started it; a server that
+    /// does not answer in time is assumed to be running. Without launchd (or when it does not
+    /// come up), the pane's own tmux client starts a server as before.
+    @discardableResult func ensureServer() -> Bool {
+        guard let tmux = tmuxPath else { return false }
+        switch Self.serverState(tmux) {
+        case .running: return true
+        case .unknown: return false
+        case .absent: break
+        }
+        let plist = PluginManager.supportDirectory.appendingPathComponent("tmux-server.plist")
+        let job = TmuxCommand.serverJob(label: serverLabel, tmux: tmux, shell: shell,
+                                        home: FileManager.default.homeDirectoryForCurrentUser.path,
+                                        language: ProcessInfo.processInfo.environment["LANG"] ?? "en_US.UTF-8")
+        do {
+            try FileManager.default.createDirectory(at: PluginManager.supportDirectory, withIntermediateDirectories: true)
+            try PropertyListSerialization.data(fromPropertyList: job, format: .xml, options: 0).write(to: plist, options: .atomic)
+        } catch { return false }
+        let domain = "gui/\(getuid())"
+        // Loaded from an earlier start (its server has exited since): start it again.
+        // Otherwise load it; RunAtLoad starts the server.
+        if Self.execute("/bin/launchctl", ["kickstart", "\(domain)/\(serverLabel)"], timeout: 2).status != 0 {
+            _ = Self.execute("/bin/launchctl", ["bootstrap", domain, plist.path], timeout: 2)
+        }
+        for _ in 0..<30 {
+            if Self.serverState(tmux) == .running { return true }
+            usleep(100_000)
+        }
+        AppDelegate.logger.warning("tmux server did not start through launchd; the pane starts it")
+        return false
+    }
+
+    private enum ServerState { case running, absent, unknown }
+
+    private static func serverState(_ tmux: String) -> ServerState {
+        let result = execute(tmux, ["list-sessions"], timeout: 2)
+        guard let status = result.status else { return .unknown }
+        if status == 0 { return .running }
+        return result.error.contains("no server running") || result.error.contains("error connecting")
+            ? .absent : .unknown
+    }
+
+    // MARK: Saved history
+
+    /// The text of a session's active pane: the visible screen, or with `history` also the
+    /// last 3000 lines of scrollback. Empty when tmux does not answer.
+    func capture(_ session: String, history: Bool) -> String {
+        guard let tmux = tmuxPath, TmuxCommand.isValidSessionName(session) else { return "" }
+        var arguments = ["capture-pane", "-p", "-J", "-t", "=" + session + ":"]
+        if history { arguments += ["-S", "-3000"] }
+        var text = Self.run(tmux, arguments) ?? ""
+        while let last = text.last, last.isWhitespace { text.removeLast() }
+        return text
+    }
+
+    /// Quitting only detaches tmux panes, so a busy tmux pane needs no confirmation. True
+    /// when every pane that would ask is a tmux pane.
+    var onlyTmuxPanesAreBusy: Bool {
+        let views = NSApp.windows.compactMap { $0.windowController as? BaseTerminalController }
+            .flatMap { Array($0.surfaceTree) }
+        let busy = views.filter(\.needsConfirmQuit)
+        return !busy.isEmpty && busy.allSatisfy { panes[$0.id] != nil }
     }
 
     // MARK: Opening
@@ -243,8 +319,10 @@ final class TmuxPlugin: ObservableObject {
     }
 
     /// A surface for a saved tmux pane; registered so the next checkpoint keeps it a tmux pane.
-    func restoreView(_ pane: TmuxPane, app: ghostty_app_t, fontSize: Float) -> Ghostty.SurfaceView {
-        let view = Ghostty.SurfaceView(app, baseConfig: configuration(pane, command: pane.resumeCommand, fontSize: fontSize))
+    /// `replay` is shown above the resume command when the session has to be recreated.
+    func restoreView(_ pane: TmuxPane, app: ghostty_app_t, fontSize: Float, replay: String? = nil) -> Ghostty.SurfaceView {
+        let view = Ghostty.SurfaceView(app, baseConfig: configuration(pane, command: pane.resumeCommand,
+                                                                      fontSize: fontSize, replay: replay))
         panes[view.id] = pane
         return view
     }
@@ -329,6 +407,11 @@ final class TmuxPlugin: ObservableObject {
             detach.representedObject = current.session
             detach.toolTip = "Closes this pane; the session keeps running and appears under Detached Sessions. Inside tmux: Ctrl-b d."
             detach.setImageIfDesired(systemSymbolName: "eject")
+            let copy = menu.addItem(withTitle: "Copy Attach Command", action: #selector(copyAttachCommandFromMenu(_:)), keyEquivalent: "")
+            copy.target = self
+            copy.representedObject = current.session
+            copy.toolTip = "tmux attach -t \(current.session): continue this session in any terminal"
+            copy.setImageIfDesired(systemSymbolName: "doc.on.doc")
             let end = menu.addItem(withTitle: "End Session…", action: #selector(endSession(_:)), keyEquivalent: "")
             end.target = self
             end.representedObject = current.session
@@ -405,6 +488,16 @@ final class TmuxPlugin: ObservableObject {
         }
     }
 
+    @objc private func copyAttachCommandFromMenu(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        copyAttachCommand(name)
+    }
+
+    func copyAttachCommand(_ name: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(TmuxCommand.attachCommand(session: name), forType: .string)
+    }
+
     @objc private func endSession(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         let alert = NSAlert()
@@ -427,22 +520,42 @@ final class TmuxPlugin: ObservableObject {
     /// Runs tmux directly (no shell). Returns nil when no server is running, or when tmux
     /// does not answer within `timeout` (a wedged server must not freeze a menu).
     private static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 1) -> String? {
+        let result = execute(executable, arguments, timeout: timeout)
+        return result.status == 0 ? result.output : nil
+    }
+
+    /// Runs a program without a shell. `status` is nil when it did not finish within
+    /// `timeout`; it is then terminated. Output is read while the program runs, so a large
+    /// capture cannot fill the pipe and stall it.
+    private static func execute(_ executable: String, _ arguments: [String],
+                                timeout: TimeInterval) -> (status: Int32?, output: String, error: String) {
         let process = Process()
         let output = Pipe()
-        let finished = DispatchSemaphore(value: 0)
+        let error = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { _ in finished.signal() }
-        do { try process.run() } catch { return nil }
-        // tmux output here is small; it fits the pipe buffer while we wait.
-        guard finished.wait(timeout: .now() + timeout) == .success else {
-            process.terminate()
-            return nil
+        process.standardError = error
+        // Not inside a tmux client of the user's own: always talk to the default server.
+        var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "TMUX")
+        process.environment = environment
+        do { try process.run() } catch { return (nil, "", "") }
+        let group = DispatchGroup()
+        var outputData = Data()
+        var errorData = Data()
+        DispatchQueue.global(qos: .userInitiated).async(group: group) {
+            outputData = output.fileHandleForReading.readDataToEndOfFile()
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)
+        DispatchQueue.global(qos: .userInitiated).async(group: group) {
+            errorData = error.fileHandleForReading.readDataToEndOfFile()
+        }
+        guard group.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            return (nil, "", "")
+        }
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: outputData, as: UTF8.self),
+                String(decoding: errorData, as: UTF8.self))
     }
 }

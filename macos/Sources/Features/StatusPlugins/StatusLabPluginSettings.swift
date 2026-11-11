@@ -349,9 +349,12 @@ enum TmuxCommand {
     /// With `hideStatus`, the session's own tmux status line is turned off (session option,
     /// so the user's other sessions and configuration are not affected).
     static func surfaceCommand(tmux: String, shell: String, session: String,
-                               directory: String, command: String, hideStatus: Bool = false) -> String {
+                               directory: String, command: String, hideStatus: Bool = false,
+                               replay: String? = nil) -> String {
         let target = quote("=" + session)
-        let inner = command + "; exec " + quote(shell) + " -l"
+        // A recreated session first shows the saved history, then runs the command.
+        let history = replay.map { "/bin/cat " + quote($0) + "; " } ?? ""
+        let inner = history + command + "; exec " + quote(shell) + " -l"
         // Option commands parse targets as panes: an exact session needs the "=name:" form.
         let hideExisting = hideStatus ? "\(quote(tmux)) set-option -t \(quote("=" + session + ":")) status off 2>/dev/null; " : ""
         let hideNew = hideStatus ? " ';' set-option status off" : ""
@@ -365,6 +368,27 @@ enum TmuxCommand {
     }
 
     static let scriptVariable = "GHOSTTY_TMUX_SCRIPT"
+
+    /// What to type in any terminal to continue a session.
+    static func attachCommand(session: String) -> String { "tmux attach -t " + session }
+
+    /// A launchd job that runs the tmux server in the foreground (`tmux -D`, which also keeps
+    /// it running without sessions) in the user's login environment, so programs in the
+    /// sessions find the same PATH as in a terminal. Not kept alive: when the server is ended
+    /// on purpose it stays ended until Ghostty needs it again.
+    static func serverJob(label: String, tmux: String, shell: String, home: String, language: String) -> [String: Any] {
+        [
+            "Label": label,
+            "ProgramArguments": [shell, "-lc", "exec " + quote(tmux) + " -D"],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "ProcessType": "Interactive",
+            "WorkingDirectory": home,
+            "EnvironmentVariables": ["SHELL": shell, "LANG": language],
+            "StandardOutPath": "/dev/null",
+            "StandardErrorPath": "/dev/null",
+        ]
+    }
 
     static func expand(directory: String, home: String) -> String {
         if directory == "~" { return home }

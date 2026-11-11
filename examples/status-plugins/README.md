@@ -229,12 +229,23 @@ shows a tmux submenu with the profiles and all detached sessions, to open as a s
 next to that pane or as a new tab. Session names are
 `ghostty-<profile>-<random>`.
 
-The Session Manager stores the tmux session per pane. Because the tmux server runs
-outside Ghostty, an app crash leaves the session and its program running: restore
-reattaches without starting anything. After a restart or shutdown the server is gone,
-and restore recreates the session in the saved directory with the resume command
-(default for Claude: `claude --continue`). When the command exits, the pane keeps a
-login shell. Closing a pane detaches it; end sessions from the Plugin Manager.
+The tmux server does not belong to Ghostty. When none is running, Ghostty starts it as a
+launchd job of the user (`tmux -D` in the login environment; `tmux-server.plist` in the
+app's Application Support directory). Quitting Ghostty, a crash or a Force Quit therefore
+only ends the tmux clients in its panes; the sessions and the programs in them keep
+running and can be attached from any terminal (**Copy Attach Command** in the pane's
+tmux menu: `tmux attach -t ghostty-claude-ab12`). Quitting does not ask for confirmation
+when only tmux panes are busy. A server that is already running, whoever started it, is
+used as it is.
+
+The Session Manager stores the tmux session per pane, and its output read from tmux
+(`capture-pane`): the visible screen with the regular checkpoints, the last 3000 lines
+when quitting and before sleep. A restore reattaches when the session still runs. After
+a restart or shutdown the server is gone; restore recreates the session in the saved
+directory, prints the saved history and then runs the resume command (default for
+Claude: `claude --continue`, or a login shell when Claude had already exited). When the
+command exits, the pane keeps a login shell. Closing a pane detaches it; end sessions
+from the Plugin Manager.
 
 ## Example metrics
 

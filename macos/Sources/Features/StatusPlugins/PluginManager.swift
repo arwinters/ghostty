@@ -858,7 +858,7 @@ private struct TmuxSection: View {
         } header: {
             Text("General")
         } footer: {
-            Text("Open a profile by right-clicking a pane or from the Plugins menu (first profile: ⌥⌘T). Detach with Ctrl-b d; the session keeps running. Hiding the status line applies only to sessions opened here.")
+            Text("Open a profile by right-clicking a pane or from the Plugins menu (first profile: ⌥⌘T). The tmux server runs on its own, outside Ghostty: quitting Ghostty only detaches, and every session can be attached from any terminal. Their history is saved, so a session that ended with a restart comes back with its last output. Hiding the status line applies only to sessions opened here.")
         }
 
         ForEach($settings.profiles) { $profile in
@@ -902,6 +902,13 @@ private struct TmuxSection: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button {
+                        TmuxPlugin.shared.copyAttachCommand(session.name)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy “\(TmuxCommand.attachCommand(session: session.name))” to continue it in any terminal")
                     Button("Attach") { TmuxPlugin.shared.attach(session.name) }
                     Button("End", role: .destructive) { TmuxPlugin.shared.kill(session.name) }
                 }
