@@ -56,6 +56,9 @@ final class TmuxPlugin: ObservableObject {
     private var panes: [UUID: TmuxPane] = [:] {
         didSet { updatePathPolling() }
     }
+    /// The program in each session's active pane (`pane_current_command`), so a checkpoint
+    /// knows whether the profile's program (for example Claude) still runs there.
+    private var commands: [String: String] = [:]
     private var pathTimer: Timer?
 
     // MARK: Executables
@@ -74,35 +77,80 @@ final class TmuxPlugin: ObservableObject {
 
     func pane(for id: UUID) -> TmuxPane? { panes[id] }
 
+    /// tmux sessions shown in a pane of this app.
+    var shownSessions: Set<String> { Set(panes.values.map(\.session)) }
+
     /// The directory to show for a surface that is a tmux pane.
     func path(for id: UUID) -> String? { panes[id].flatMap { paths[$0.session] ?? $0.directory } }
 
+    /// The pane as it should be saved now: in the directory tmux reports, and resuming a
+    /// plain shell once the profile's program has exited. Without this, a pane where Claude
+    /// was closed hours ago would start `claude --continue` again in its first directory
+    /// after a restart.
+    func snapshotPane(for id: UUID) -> TmuxPane? {
+        guard var pane = panes[id] else { return nil }
+        if let path = paths[pane.session] { pane.directory = path }
+        if let command = commands[pane.session], Self.isShell(command) {
+            pane.resumeCommand = shell + " -l"
+        }
+        return pane
+    }
+
+    /// Whether tmux reports a shell (not a program started from it) as the pane's command.
+    static func isShell(_ command: String) -> Bool {
+        let name = (command.hasPrefix("-") ? String(command.dropFirst()) : command) as NSString
+        return ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "login"]
+            .contains(name.lastPathComponent)
+    }
+
+    /// tmux is asked every few seconds only while Ghostty is the active app: the status bar
+    /// is the only live consumer. Checkpoints taken in the background (sleep, quit) refresh
+    /// synchronously first.
     private func updatePathPolling() {
         if panes.isEmpty {
             pathTimer?.invalidate()
             pathTimer = nil
         } else if pathTimer == nil {
-            pathTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+                guard NSApp.isActive else { return }
                 self?.refreshPaths()
             }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            pathTimer = timer
             refreshPaths()
         }
     }
 
-    private func refreshPaths() {
-        guard let tmux = tmuxPath else { return }
-        DispatchQueue.global(qos: .utility).async {
+    /// Updates directories and running programs. `synchronously` blocks for at most a second.
+    func refreshPaths(synchronously: Bool = false) {
+        guard let tmux = tmuxPath, !panes.isEmpty else { return }
+        let work = {
             // One call for every session: the active pane of each session's active window.
             let output = Self.run(tmux, ["list-panes", "-a", "-F",
-                                         "#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_current_path}"])
-            var result: [String: String] = [:]
+                                         "#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}"])
+            var paths: [String: String] = [:]
+            var commands: [String: String] = [:]
             for line in (output ?? "").split(separator: "\n") {
-                let fields = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
-                guard fields.count == 4, fields[1] == "1", fields[2] == "1", fields[3].hasPrefix("/") else { continue }
-                result[fields[0]] = fields[3]
+                let fields = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+                guard fields.count == 5, fields[1] == "1", fields[2] == "1" else { continue }
+                commands[fields[0]] = fields[3]
+                if fields[4].hasPrefix("/") { paths[fields[0]] = fields[4] }
             }
-            DispatchQueue.main.async {
-                if result != self.paths { self.paths = result }
+            return (failed: output == nil, paths: paths, commands: commands)
+        }
+        let apply: ((failed: Bool, paths: [String: String], commands: [String: String])) -> Void = { result in
+            // No answer (no server, or a wedged one): keep what was last known.
+            guard !result.failed else { return }
+            self.commands = result.commands
+            if result.paths != self.paths { self.paths = result.paths }
+        }
+        if synchronously {
+            apply(work())
+        } else {
+            DispatchQueue.global(qos: .utility).async {
+                let result = work()
+                DispatchQueue.main.async { apply(result) }
             }
         }
     }

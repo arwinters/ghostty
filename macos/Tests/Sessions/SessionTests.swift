@@ -75,4 +75,64 @@ struct SessionTests {
         value.windows[0].tree = .split(horizontal: false, ratio: 0.5, left: pane, right: pane)
         #expect(throws: SessionStore.Failure.self) { try value.validate() }
     }
+
+    @Test func transcriptLimitHoldsForMultiScalarCharacters() throws {
+        // One Character made of many scalars: counting Characters let the UTF-8 size exceed
+        // the validation limit, so every later checkpoint failed and an older one was restored.
+        let family = "👨‍👩‍👧‍👦"
+        let text = SessionSnapshot.safeTranscript(String(repeating: family, count: 40_000))
+        #expect(text.unicodeScalars.count <= SessionSnapshot.transcriptLimit)
+        var value = fixture()
+        guard case .pane(var pane) = value.windows[0].tree else { Issue.record("No pane"); return }
+        pane.transcript = text
+        value.windows[0].tree = .pane(pane)
+        try value.validate()
+    }
+    @Test func oddDirectoriesAreDroppedInsteadOfFailingTheCheckpoint() {
+        #expect(SessionSnapshot.safeDirectory("/Users/me/project") == "/Users/me/project")
+        #expect(SessionSnapshot.safeDirectory("") == nil)
+        #expect(SessionSnapshot.safeDirectory("~/project") == nil)
+        #expect(SessionSnapshot.safeDirectory("file://host/tmp") == nil)
+        #expect(SessionSnapshot.safeDirectory(nil) == nil)
+    }
+    @Test func summariesAreIndexedAndDeletesKeepTheIndexCurrent() throws {
+        let store = store()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        var first = fixture(); first.date = Date(timeIntervalSinceNow: -60)
+        let second = fixture()
+        try store.save(first)
+        try store.save(second)
+        #expect(store.summaries().map(\.id) == [second.id, first.id])
+        try store.delete(second.id)
+        #expect(store.summaries().map(\.id) == [first.id])
+        // A fresh store reads the same index from disk.
+        #expect(SessionStore(directory: store.directory).summaries().map(\.id) == [first.id])
+        #expect(try store.load(first.id).windows.first?.tree.panes.first?.transcript == "previous output\n")
+        #expect(throws: SessionStore.Failure.self) { try store.load(second.id) }
+    }
+    @Test func summaryDescribesPlacesAndTmuxProfiles() {
+        var value = fixture()
+        let shell = value.windows[0].tree
+        let tmux = SessionSnapshot.Pane(id: UUID(), directory: nil, title: "👻", customTitle: false, fontSize: 14,
+                                        transcript: "", tmux: TmuxPane(session: "ghostty-claude-ab12", profile: "claude",
+                                                                       directory: "/Users/me/fitrelay", resumeCommand: "claude --continue"))
+        value.windows[0].tree = .split(horizontal: true, ratio: 0.5, left: shell, right: .pane(tmux))
+        let summary = value.summary
+        #expect(summary.places == ["tmp", "fitrelay"])
+        #expect(summary.profiles == ["claude"])
+        #expect(summary.tmuxPanes == 1)
+        #expect(summary.matches("FITRELAY"))
+        #expect(summary.matches("ab12"))
+        #expect(!summary.matches("nothing-like-this"))
+        var other = value; other.id = UUID(); other.date = .distantPast
+        #expect(other.summary.hasSameContent(as: summary))
+    }
+    @Test func tmuxShellDetection() {
+        #expect(TmuxPlugin.isShell("zsh"))
+        #expect(TmuxPlugin.isShell("-zsh"))
+        #expect(TmuxPlugin.isShell("/bin/bash"))
+        #expect(!TmuxPlugin.isShell("claude"))
+        #expect(!TmuxPlugin.isShell("node"))
+        #expect(!TmuxPlugin.isShell("vim"))
+    }
 }

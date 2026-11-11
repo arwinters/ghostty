@@ -55,7 +55,7 @@ struct StatusPluginFrame: Decodable {
     let version: Int
     let widgets: [Widget]
 
-    struct Widget: Decodable, Identifiable {
+    struct Widget: Decodable, Identifiable, Equatable {
         let id: String
         let label: String
         let value: String

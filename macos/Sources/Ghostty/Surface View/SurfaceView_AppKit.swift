@@ -943,7 +943,7 @@ extension Ghostty {
         override func rightMouseDown(with event: NSEvent) {
             guard let surface = self.surface else { return super.rightMouseDown(with: event) }
 
-            let mods = Ghostty.ghosttyMods(event.modifierFlags)
+            let mods = rightClickMods(event)
             if ghostty_surface_mouse_button(
                 surface,
                 GHOSTTY_MOUSE_PRESS,
@@ -961,7 +961,7 @@ extension Ghostty {
         override func rightMouseUp(with event: NSEvent) {
             guard let surface = self.surface else { return super.rightMouseUp(with: event) }
 
-            let mods = Ghostty.ghosttyMods(event.modifierFlags)
+            let mods = rightClickMods(event)
             if ghostty_surface_mouse_button(
                 surface,
                 GHOSTTY_MOUSE_RELEASE,
@@ -974,6 +974,17 @@ extension Ghostty {
 
             // Mouse event not consumed
             super.rightMouseUp(with: event)
+        }
+
+        /// Status Lab: right-click always opens the Ghostty context menu, in every pane.
+        /// tmux enables mouse reporting (for wheel scrolling), which would otherwise send
+        /// the click to tmux — also a tmux started by hand, which `TmuxPlugin` does not
+        /// know about. Adding shift bypasses mouse reporting the same way a
+        /// shift-right-click does; the price is that mouse programs (vim, htop) no longer
+        /// receive a right-click.
+        private func rightClickMods(_ event: NSEvent) -> ghostty_input_mods_e {
+            let mods = Ghostty.ghosttyMods(event.modifierFlags)
+            return ghostty_input_mods_e(mods.rawValue | GHOSTTY_MODS_SHIFT.rawValue)
         }
 
         override func mouseEntered(with event: NSEvent) {
@@ -1593,52 +1604,8 @@ extension Ghostty {
                 return nil
             }
 
-            let menu = NSMenu()
-
-            // We just use a floating var so we can easily setup metadata on each item
-            // in a row without storing it all.
-            var item: NSMenuItem
-
-            // If we have a selection, add copy
-            if let text = self.accessibilitySelectedText(), text.count > 0 {
-                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
-            }
-            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
-
-            menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Left", action: #selector(splitLeft(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.leadinghalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Up", action: #selector(splitUp(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
-
-            // Status Lab: tmux profiles and detached sessions, opened next to this pane.
-            if let tmux = TmuxPlugin.shared.contextMenuItem(for: self) {
-                menu.addItem(.separator())
-                menu.addItem(tmux)
-            }
-
-            menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Restart Terminal…", action: #selector(restartTerminal(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "arrow.clockwise.circle")
-            item.toolTip = "For a stuck pane: stops every program in this pane and starts a new shell in the same directory."
-            item = menu.addItem(withTitle: "Clear Garbled Screen", action: #selector(resetTerminal(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "eraser")
-            item.toolTip = "Resets the screen and terminal modes after garbled output. Programs keep running."
-            item = menu.addItem(withTitle: "Toggle Terminal Inspector", action: #selector(toggleTerminalInspector(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "scope")
-            item = menu.addItem(withTitle: "Terminal Read-only", action: #selector(toggleReadonly(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "eye.fill")
-            item.state = readonly ? .on : .off
-            menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Change Tab Title...", action: #selector(BaseTerminalController.changeTabTitle(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "pencil.line")
-            item = menu.addItem(withTitle: "Change Terminal Title...", action: #selector(changeTitle(_:)), keyEquivalent: "")
-
-            return menu
+            // Status Lab: see SurfaceContextMenu.swift.
+            return statusLabContextMenu()
         }
 
         // MARK: Menu Handlers

@@ -3,10 +3,16 @@ import Darwin
 import Foundation
 import os
 
-/// A host per visible terminal container. Plugins are ordinary trusted local processes,
-/// not sandboxed code. Nothing is started until an explicit manifest is configured.
+/// Runs the status plugins. Plugins are ordinary trusted local processes, not sandboxed
+/// code. Nothing is started until an explicit manifest is configured.
+///
+/// Every status bar shares `shared`: one set of plugin processes for the whole app. Earlier
+/// builds started a host per tab, so ten tabs ran ten copies of every plugin (and ten
+/// weather downloads), each redrawing its bar twice a second.
 final class StatusPluginHost: ObservableObject {
-    struct Item: Identifiable {
+    static let shared = StatusPluginHost(observesChanges: true)
+
+    struct Item: Identifiable, Equatable {
         let id: String
         let widget: StatusPluginFrame.Widget
         var placement = StatusPluginPlacement.leading
@@ -16,6 +22,48 @@ final class StatusPluginHost: ObservableObject {
     @Published private(set) var errors: [String] = []
     private var sessions: [ManagedSession] = []
     private var timer: Timer?
+    /// Status bars currently showing this host's items, and the manifest they show.
+    private var users = 0
+    private var manifest: String?
+    private var observers: [NSObjectProtocol] = []
+
+    init() {}
+
+    private init(observesChanges: Bool) {
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: .statusPluginsDidChange, object: nil, queue: .main) { [weak self] _ in
+                self?.restart()
+            },
+            // Retry failed plugins after a configuration reload; healthy ones keep running.
+            center.addObserver(forName: .ghosttyConfigDidChange, object: nil, queue: .main) { [weak self] _ in
+                if self?.errors.isEmpty == false { self?.restart() }
+            },
+        ]
+    }
+
+    /// A status bar appeared. Starts the plugins for the first bar, or when the manifest changed.
+    func acquire(manifest path: String) {
+        users += 1
+        if path != manifest || timer == nil { start(manifest: path) }
+    }
+
+    /// The configured manifest changed; every bar reports it, the plugins restart once.
+    func use(manifest path: String) {
+        if path != manifest { start(manifest: path) }
+    }
+
+    /// A status bar disappeared. The plugins stop with the last one.
+    func release() {
+        users = max(0, users - 1)
+        if users == 0 { stop() }
+    }
+
+    /// Restarts the plugins with the current manifest, if any bar shows them.
+    func restart() {
+        guard users > 0, let manifest else { return }
+        start(manifest: manifest)
+    }
 
     /// Backoff is capped but retries continue, so a transient failure needs no user action.
     struct RetryPolicy {
@@ -173,6 +221,7 @@ final class StatusPluginHost: ObservableObject {
 
     func start(manifest path: String?) {
         stop()
+        manifest = path
         guard let path, !path.isEmpty else { return }
         do {
             let manifest = try StatusPluginManifest.load(path)
@@ -186,15 +235,19 @@ final class StatusPluginHost: ObservableObject {
         timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.sessions.forEach { $0.poll() }
-            self.items = self.sessions.flatMap { session in
+            let items = self.sessions.flatMap { session in
                 session.widgets.map {
                     Item(id: "\(session.id)/\($0.id)", widget: $0, placement: session.plugin.placement)
                 }
             }
-            self.errors = startupErrors + self.sessions.compactMap { session in
+            let errors = startupErrors + self.sessions.compactMap { session in
                 session.failure.map { "\(session.id): \($0)" }
             }
+            // Publishing redraws every status bar: only do so when something changed.
+            if items != self.items { self.items = items }
+            if errors != self.errors { self.errors = errors }
         }
+        timer?.tolerance = 0.1
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
 
@@ -203,11 +256,12 @@ final class StatusPluginHost: ObservableObject {
         timer = nil
         sessions.forEach { $0.stop() }
         sessions = []
-        items = []
-        errors = []
+        if !items.isEmpty { items = [] }
+        if !errors.isEmpty { errors = [] }
     }
 
     deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
         timer?.invalidate()
         sessions.forEach { $0.stop() }
     }

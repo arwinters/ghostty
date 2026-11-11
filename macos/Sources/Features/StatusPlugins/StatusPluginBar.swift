@@ -5,7 +5,7 @@ struct StatusPluginBar: View {
     let manifest: String
     let background: Color
     let surface: Ghostty.SurfaceView?
-    @StateObject private var host = StatusPluginHost()
+    @ObservedObject private var host = StatusPluginHost.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -18,7 +18,7 @@ struct StatusPluginBar: View {
                     }
                     if !host.errors.isEmpty {
                         TextButton("Restart plugins", help: "Restart status plugins without closing terminals") {
-                            host.start(manifest: manifest)
+                            host.restart()
                         }
                     }
                 }
@@ -43,15 +43,10 @@ struct StatusPluginBar: View {
         .frame(height: 30)
         .background(background)
         .overlay(alignment: .top) { Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1) }
-        .onAppear { host.start(manifest: manifest) }
-        .onChange(of: manifest) { host.start(manifest: $0) }
-        .onReceive(NotificationCenter.default.publisher(for: .ghosttyConfigDidChange)) { _ in
-            if !host.errors.isEmpty { host.start(manifest: manifest) }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .statusPluginsDidChange)) { _ in
-            host.start(manifest: manifest)
-        }
-        .onDisappear { host.stop() }
+        // One shared host: plugins run once for all windows and stop with the last bar.
+        .onAppear { host.acquire(manifest: manifest) }
+        .onChange(of: manifest) { host.use(manifest: $0) }
+        .onDisappear { host.release() }
     }
 
     /// tmux session and its active pane's directory, for panes opened by the tmux plugin.
