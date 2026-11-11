@@ -6,7 +6,8 @@
   see-through window is see-through everywhere, with `background-blur` (including the
   macOS 26 glass styles) behind them too. They turn opaque with the window, such as in
   native fullscreen. Configured only in the configuration; `status-lab.config` explains
-  the options.
+  the options. The default configuration now uses `background-opacity = 0.85`,
+  `background-blur = 20` and `background-opacity-cells = true`.
 - Screenshots keep a see-through terminal see-through.
 
 ## 0.9.5 — 2026-11-11

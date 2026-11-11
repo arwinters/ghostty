@@ -7,7 +7,7 @@ normal Ghostty and leaves it untouched.
 **Not an official Ghostty release and not a pull request.** I am sharing it to start a
 conversation about which of these ideas could fit Ghostty.
 
-![Ghostty Status Lab](screenshot.png)
+<!-- Screenshot follows: ![Ghostty Status Lab](screenshot.png) -->
 
 ## Features
 
@@ -41,12 +41,17 @@ It is signed ad hoc for the Mac that built it. `--skip-core` reuses an already b
 
 Everything is a normal Ghostty configuration. On first launch the app writes
 `~/Library/Application Support/<bundle id>/config.ghostty` from
-[`status-lab.config`](status-lab.config): Dracula on black, JetBrains Mono, the tab strip,
-split keybindings and session restore. Edit it like any Ghostty configuration and reload
+[`status-lab.config`](status-lab.config): Dracula on black with a see-through, blurred
+background, JetBrains Mono, the tab strip, split keybindings and session restore. Edit it like any Ghostty configuration and reload
 with ⇧⌘, .
 
-Transparency is plain Ghostty configuration (`background-opacity`, `background-blur`,
-`background-opacity-cells`); the status bar and tab strip follow it.
+Transparency is plain Ghostty configuration; the status bar and tab strip follow it:
+
+```ini
+background-opacity = 0.85        # 1 is opaque; restart Ghostty after changing it
+background-blur = 20             # or macos-glass-regular / macos-glass-clear on macOS 26
+background-opacity-cells = true  # also backgrounds that tmux, vim or Claude Code paint
+```
 
 Status Lab adds one option:
 
@@ -82,6 +87,10 @@ app passes to Ghostty's `macos-status-plugins` option. tmux profiles live there 
 - macOS only.
 - Plugins run with your permissions and are not sandboxed; install only plugins you trust.
 - Programs in normal panes do not survive a restart; use a tmux pane for those.
+- Transparency is off in native fullscreen: macOS gives a fullscreen window its own
+  Space with nothing behind it (iTerm2 behaves the same). To keep it, fill the screen
+  instead (🌐/Fn ⌃F, or ⌥-click the green button). Ghostty's non-native fullscreen
+  keeps transparency too, but does not support tabs.
 - Ad-hoc signed: runs on the Mac that built it. Distribution needs a Developer ID.
 
 ## About
