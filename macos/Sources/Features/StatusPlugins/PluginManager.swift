@@ -270,6 +270,7 @@ private struct PluginInfo {
     static let stats = builtIn("System Stats", "cpu", "CPU, memory, network and disk activity of this Mac. Measured locally; nothing leaves the computer.")
     static let weather = builtIn("Weather", "cloud.sun", "Current conditions for a place you choose, from Open-Meteo.")
     static let clock = builtIn("Clock", "clock", "Date and time in the format of your region.")
+    static let battery = builtIn("Battery", "battery.75", "Charge of this Mac's battery and the time left, read from macOS. Shows nothing on a Mac without a battery.")
     static let tmux = builtIn("tmux", "rectangle.split.3x1", "Panes that run in tmux, such as Claude Code sessions. They keep running when a pane closes or Ghostty crashes.")
     static let ai = builtIn("AI Sessions", "sparkles", "Start Claude Code, Codex or another AI tool from a pane's right-click menu, in that pane's directory. Configured in your Ghostty configuration.")
 
@@ -357,7 +358,7 @@ private struct PluginManagerView: View {
     @State private var page: Page = .installed
 
     enum Page: Hashable, Identifiable {
-        case installed, stats, weather, clock, tmux, ai
+        case installed, stats, weather, battery, clock, tmux, ai
         case custom(UUID)
         var id: Self { self }
     }
@@ -368,7 +369,7 @@ private struct PluginManagerView: View {
     }
 
     private var pages: [Page] {
-        [.installed, .stats, .weather, .clock, .tmux, .ai] + draft.custom.map { .custom($0.key) }
+        [.installed, .stats, .weather, .battery, .clock, .tmux, .ai] + draft.custom.map { .custom($0.key) }
     }
 
     var body: some View {
@@ -382,6 +383,9 @@ private struct PluginManagerView: View {
             case .weather:
                 PluginHeader(info: .weather, enabled: $draft.weather.enabled, state: state(.weather))
                 WeatherSection(settings: $draft.weather)
+            case .battery:
+                PluginHeader(info: .battery, enabled: $draft.battery.enabled, state: state(.battery))
+                BatterySection(settings: $draft.battery)
             case .clock:
                 PluginHeader(info: .clock, enabled: $draft.clock.enabled, state: state(.clock))
                 ClockSection(settings: $draft.clock)
@@ -450,6 +454,8 @@ private struct PluginManagerView: View {
             return .init(title: "System Stats", symbol: PluginInfo.stats.symbol, badge: badge, group: "Plugins", badgeColor: color)
         case .weather:
             return .init(title: "Weather", symbol: PluginInfo.weather.symbol, badge: badge, group: "Plugins", badgeColor: color)
+        case .battery:
+            return .init(title: "Battery", symbol: PluginInfo.battery.symbol, badge: badge, group: "Plugins", badgeColor: color)
         case .clock:
             return .init(title: "Clock", symbol: PluginInfo.clock.symbol, badge: badge, group: "Plugins", badgeColor: color)
         case .tmux:
@@ -475,6 +481,8 @@ private struct PluginManagerView: View {
             (wanted, applied, id) = (draft.stats.enabled, manager.settings.stats.enabled, "system-stats")
         case .weather:
             (wanted, applied, id) = (draft.weather.enabled, manager.settings.weather.enabled, "weather")
+        case .battery:
+            (wanted, applied, id) = (draft.battery.enabled, manager.settings.battery.enabled, "battery")
         case .clock:
             (wanted, applied, id) = (draft.clock.enabled, manager.settings.clock.enabled, "clock")
         case .tmux:
@@ -520,7 +528,7 @@ private struct InstalledPage: View {
     @State private var failure: String?
 
     private var slots: Int {
-        [draft.stats.enabled, draft.weather.enabled, draft.clock.enabled].filter { $0 }.count +
+        [draft.stats.enabled, draft.weather.enabled, draft.battery.enabled, draft.clock.enabled].filter { $0 }.count +
             draft.custom.filter { $0.enabled && StatusLabPluginSettings.isValid($0) }.count
     }
 
@@ -528,6 +536,7 @@ private struct InstalledPage: View {
         Section {
             PluginRow(info: .stats, enabled: $draft.stats.enabled, state: state(.stats)) { open(.stats) }
             PluginRow(info: .weather, enabled: $draft.weather.enabled, state: state(.weather)) { open(.weather) }
+            PluginRow(info: .battery, enabled: $draft.battery.enabled, state: state(.battery)) { open(.battery) }
             PluginRow(info: .clock, enabled: $draft.clock.enabled, state: state(.clock)) { open(.clock) }
             PluginRow(info: .tmux, enabled: $draft.tmux.enabled, state: state(.tmux)) { open(.tmux) }
             PluginRow(info: .ai, enabled: nil, state: state(.ai)) { open(.ai) }
@@ -758,13 +767,19 @@ private struct StatsSection: View {
                 Text("Blocks (compact)").tag(StatusLabPluginSettings.Stats.GraphStyle.blocks)
                 Text("Lines").tag(StatusLabPluginSettings.Stats.GraphStyle.lines)
             }
+            Picker("Network and disk activity", selection: $settings.activity) {
+                Text("Combined").tag(StatusLabPluginSettings.Stats.ActivityStyle.combined)
+                Text("Separate").tag(StatusLabPluginSettings.Stats.ActivityStyle.separate)
+            }
             Toggle("Show disk space and disk activity", isOn: $settings.disk)
         } header: {
             Text("Display")
         } footer: {
-            Text(settings.graphStyle == .blocks
-                 ? "CPU: one block per core, performance cores blue and efficiency cores teal. Memory, network and disk: the last 12 seconds."
-                 : "Line graphs of the last 60 seconds.")
+            Text((settings.graphStyle == .blocks
+                 ? "CPU: one block per core, performance cores cyan and efficiency cores amber. Memory and disk space: a meter each, red when nearly full. Activity: the last 12 seconds."
+                 : "Line graphs of the last 60 seconds.") +
+                 (settings.activity == .combined
+                  ? " Combined: download (blue) and disk reads (green) grow up, upload (red) and disk writes (magenta) grow down, on one scale per graph." : ""))
         }
         Section {
             TextField("Interface", text: $settings.interface, prompt: Text("auto"))
@@ -839,6 +854,21 @@ private struct WeatherSection: View {
             } catch {
                 self.error = "Search failed: \(error.localizedDescription)"
             }
+        }
+    }
+}
+
+private struct BatterySection: View {
+    @Binding var settings: StatusLabPluginSettings.Battery
+
+    var body: some View {
+        Section {
+            PositionPicker(position: $settings.position)
+            Toggle("Show time remaining", isOn: $settings.time)
+        } header: {
+            Text("Display")
+        } footer: {
+            Text("Time left on battery, or until full while charging, as estimated by macOS. Green while connected to power; orange at 20% and red at 10% on battery.")
         }
     }
 }

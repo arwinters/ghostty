@@ -1,8 +1,11 @@
 // Compile: swiftc -O system-stats.swift -o system-stats
-// Usage: system-stats [network-interface] [--graph blocks|lines] [--no-disk]
+// Usage: system-stats [network-interface] [--graph blocks|lines] [--activity combined|separate] [--no-disk]
 //   for example: system-stats en0 --graph blocks
-// Blocks: CPU shows one block per core (performance cores blue, efficiency cores teal);
-// the other measurements show their last 12 samples as blocks. Lines: 60-sample sparklines.
+// Combined activity: network and disk each in one graph, download/read growing up and
+// upload/write growing down, on one scale.
+// Blocks: CPU shows one block per core (performance cores cyan, efficiency cores amber);
+// memory and disk space share one widget with a meter each; activity shows the last 12
+// samples. Lines: 60-sample sparklines.
 // Emits protocol v1 NDJSON; all measurements stay on this Mac.
 import Darwin
 import Foundation
@@ -16,6 +19,11 @@ struct Widget: Encodable {
     var history: [Double]?
     var bars: [Double]?
     var barColors: [String]?
+    var mirror: [Double]?
+    var mirrorColor: String?
+    var mirrorValue: String?
+    var level: Double?
+    var mirrorLevel: Double?
 }
 struct Frame: Encodable {
     let version = 1
@@ -24,14 +32,14 @@ struct Frame: Encodable {
 
 /// One color per measurement so related values (in/out, read/write) are easy to tell apart.
 enum Palette {
-    static let cpu = "5CC8FF"        // ice blue: performance cores
-    static let cpuEfficiency = "2DD4BF" // teal: efficiency cores
+    static let cpu = "00E5FF"        // bright cyan: performance cores
+    static let cpuEfficiency = "FFC400" // amber: efficiency cores
     static let memory = "BD93F9"     // purple
-    static let download = "50FA7B"   // green
-    static let upload = "FFB86C"     // orange
+    static let download = "1E90FF"   // bold azure blue, deeper than the CPU's ice blue
+    static let upload = "FF2D55"     // bold red
     static let diskSpace = "F1FA8C"  // yellow
-    static let diskRead = "F78C6C"   // coral
-    static let diskWrite = "FF79C6"  // pink
+    static let diskRead = "00E676"   // bold green
+    static let diskWrite = "FF00C8"  // bold magenta
 }
 
 // MARK: Arguments
@@ -39,6 +47,7 @@ enum Palette {
 var interface = "en0"
 var blocks = true
 var showDisk = true
+var combined = true
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -46,6 +55,8 @@ while !arguments.isEmpty {
     case "--graph", "--cpu-graph":
         // "sparkline" is the 0.5.0 spelling of "lines".
         if !arguments.isEmpty { blocks = arguments.removeFirst() == "blocks" }
+    case "--activity":
+        if !arguments.isEmpty { combined = arguments.removeFirst() != "separate" }
     case "--no-disk": showDisk = false
     default: interface = argument
     }
@@ -192,6 +203,12 @@ func shortRate(_ bytes: Double) -> String {
     return String(format: "%4.0fk", bytes / 1e3)
 }
 
+/// `shortRate` in four columns, so an arrow stays next to its number: "  1k", "1.2M".
+func compactRate(_ bytes: Double) -> String {
+    let text = shortRate(bytes).trimmingCharacters(in: .whitespaces)
+    return String(repeating: " ", count: max(0, 4 - text.count)) + text
+}
+
 /// The most recent samples as blocks, scaled to `peak` (or to their own maximum).
 func recentBlocks(_ samples: [Double], count: Int = 12, peak: Double? = nil) -> [Double] {
     let recent = Array(samples.suffix(count))
@@ -229,6 +246,31 @@ func rate(_ id: String, _ value: Double) -> [Double] {
     return values
 }
 
+/// Turns red when nearly full.
+func levelColor(_ ratio: Double, _ color: String) -> String { ratio >= 0.9 ? "FF5555" : color }
+
+/// Two rates in one widget: `up` grows up and `down` grows down, on one scale. The square
+/// root keeps a small rate next to a large one visible.
+func twoWay(id: String, label: String, up: (String, String, Double, String),
+            down: (String, String, Double, String)) -> Widget {
+    let ups = rate(up.1, up.2)
+    let downs = rate(down.1, down.2)
+    let count = blocks ? 12 : 60
+    let peak = max(1, (ups.suffix(count) + downs.suffix(count)).max() ?? 1)
+    var widget = Widget(id: id, label: label, value: up.0 + (blocks ? compactRate(up.2) : rateText(up.2)),
+                        color: up.3)
+    widget.mirrorValue = down.0 + (blocks ? compactRate(down.2) : rateText(down.2))
+    widget.mirrorColor = down.3
+    if blocks {
+        widget.bars = recentBlocks(ups, peak: peak).map { $0.squareRoot() }
+        widget.mirror = recentBlocks(downs, peak: peak).map { $0.squareRoot() }
+    } else {
+        widget.history = ups.map { min(1, $0 / peak).squareRoot() }
+        widget.mirror = downs.map { min(1, $0 / peak).squareRoot() }
+    }
+    return widget
+}
+
 // Wait for two samples: never display fabricated initial rates.
 while true {
     Thread.sleep(forTimeInterval: 1)
@@ -264,13 +306,24 @@ while true {
     }
     previousCores = cores
 
+    // Free space changes slowly; query it every ten seconds.
+    if showDisk && tick % 10 == 0 { cachedSpace = diskSpace() }
+
     if let used = memoryUsed() {
         let total = Double(ProcessInfo.processInfo.physicalMemory)
         let samples = history("ram", used / total)
         if blocks {
-            widgets.append(Widget(id: "ram", label: "MEM",
-                                  value: String(format: "%.0f/%.0fG", used / pow(1024, 3), total / pow(1024, 3)),
-                                  color: Palette.memory, bars: recentBlocks(samples, peak: 1)))
+            // Memory and disk space in one widget: two rows with a meter each.
+            var widget = Widget(id: "memory-disk", label: "", value: String(format: "MEM %3.0f%%", used / total * 100),
+                                color: levelColor(used / total, Palette.memory))
+            widget.level = min(1, used / total)
+            if showDisk, let space = cachedSpace {
+                let ratio = space.used / space.total
+                widget.mirrorValue = String(format: "DSK %3.0f%%", ratio * 100)
+                widget.mirrorColor = levelColor(ratio, Palette.diskSpace)
+                widget.mirrorLevel = min(1, ratio)
+            }
+            widgets.append(widget)
         } else {
             widgets.append(Widget(id: "ram", label: "RAM ≈",
                                   value: String(format: "%.1f / %.0f GiB", used / pow(1024, 3), total / pow(1024, 3)),
@@ -283,7 +336,10 @@ while true {
        current.0 >= previous.0, current.1 >= previous.1 {
         let down = Double(current.0 - previous.0) / elapsed
         let up = Double(current.1 - previous.1) / elapsed
-        if blocks {
+        if combined {
+            widgets.append(twoWay(id: "network", label: "NET", up: ("↓", "download", down, Palette.download),
+                                  down: ("↑", "upload", up, Palette.upload)))
+        } else if blocks {
             widgets.append(Widget(id: "download", label: "NET ↓", value: shortRate(down),
                                   color: Palette.download, bars: recentBlocks(rate("download", down))))
             widgets.append(Widget(id: "upload", label: "↑", value: shortRate(up),
@@ -301,9 +357,7 @@ while true {
     previousNetwork = network
 
     if showDisk {
-        // Free space changes slowly; query it every ten seconds.
-        if tick % 10 == 0 { cachedSpace = diskSpace() }
-        if let space = cachedSpace {
+        if !blocks, let space = cachedSpace {
             let used = space.used / space.total
             widgets.append(Widget(id: "disk-space", label: blocks ? "DSK" : "Disk",
                                   value: blocks ? String(format: "%.0f%%", used * 100)
@@ -315,7 +369,10 @@ while true {
            current.read >= previous.read, current.written >= previous.written {
             let read = Double(current.read - previous.read) / elapsed
             let written = Double(current.written - previous.written) / elapsed
-            if blocks {
+            if combined {
+                widgets.append(twoWay(id: "disk-activity", label: "I/O", up: ("R ", "disk-read", read, Palette.diskRead),
+                                      down: ("W ", "disk-write", written, Palette.diskWrite)))
+            } else if blocks {
                 widgets.append(Widget(id: "disk-read", label: "R", value: shortRate(read),
                                       color: Palette.diskRead, bars: recentBlocks(rate("disk-read", read))))
                 widgets.append(Widget(id: "disk-write", label: "W", value: shortRate(written),

@@ -315,10 +315,12 @@ final class Screenshots: ObservableObject {
 
 extension Screenshots {
     /// For checking captures without the UI: launched with `-StatusLabScreenshotTest <dir>`,
-    /// the app writes pane.png, tab.png and window.png of the key window a few seconds later.
+    /// the app writes pane.png, tab.png and window.png of the key window a few seconds later
+    /// (`-StatusLabScreenshotDelay <seconds>`, 6 by default).
     static func captureForTestIfRequested() {
         guard let path = UserDefaults.standard.string(forKey: "StatusLabScreenshotTest") else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+        let delay = UserDefaults.standard.double(forKey: "StatusLabScreenshotDelay")
+        DispatchQueue.main.asyncAfter(deadline: .now() + (delay > 0 ? delay : 6)) {
             let controller = (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.windowController is BaseTerminalController })?
                 .windowController as? BaseTerminalController
             guard let view = controller?.focusedSurface ?? controller?.surfaceTree.first else { return }

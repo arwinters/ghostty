@@ -5,14 +5,16 @@ import Testing
 struct StatusLabPluginTests {
     let helpers = URL(fileURLWithPath: "/Apps/Lab.app/Contents/Helpers")
 
-    @Test func defaultManifestShipsStatsWeatherAndClock() throws {
+    @Test func defaultManifestShipsStatsWeatherBatteryAndClock() throws {
         let manifest = StatusLabPluginSettings().manifest(helpers: helpers, interface: "en7", locale: "nl_NL")
-        #expect(manifest.plugins.map(\.id) == ["system-stats", "weather", "clock"])
+        #expect(manifest.plugins.map(\.id) == ["system-stats", "weather", "battery", "clock"])
         #expect(manifest.plugins[0].arguments == ["en7", "--graph", "blocks"])
         #expect(manifest.plugins[0].position == "leading")
         #expect(manifest.plugins[1].position == "trailing")
-        #expect(manifest.plugins[2].position == "end")
-        #expect(manifest.plugins[2].arguments == ["--template", "EEE d MMM yyyy HH:mm", "--locale", "nl_NL"])
+        #expect(manifest.plugins[2].position == "trailing")
+        #expect(manifest.plugins[2].arguments == [])
+        #expect(manifest.plugins[3].position == "end")
+        #expect(manifest.plugins[3].arguments == ["--template", "EEE d MMM yyyy HH:mm", "--locale", "nl_NL"])
         #expect(manifest.plugins.allSatisfy { $0.executable.hasPrefix(helpers.path + "/") })
     }
 
@@ -21,13 +23,15 @@ struct StatusLabPluginTests {
         settings.weather.location = .init(name: "Utrecht", latitude: 52.09, longitude: 5.12)
         settings.stats.graphStyle = .lines
         settings.stats.disk = false
+        settings.stats.activity = .separate
+        settings.battery.enabled = false
         settings.custom = [.init(id: "community", executable: "/usr/local/bin/plugin", arguments: ["--x"])]
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: file) }
         try JSONEncoder().encode(settings.manifest(helpers: helpers, interface: "en0", locale: "en_US")).write(to: file)
         let loaded = try StatusPluginManifest.load(file.path)
         #expect(loaded.plugins.map(\.id) == ["system-stats", "weather", "clock", "community"])
-        #expect(loaded.plugins[0].arguments == ["en0", "--graph", "lines", "--no-disk"])
+        #expect(loaded.plugins[0].arguments == ["en0", "--graph", "lines", "--activity", "separate", "--no-disk"])
         #expect(loaded.plugins[1].arguments.contains("Utrecht"))
         #expect(loaded.plugins[1].placement == .trailing)
         #expect(loaded.plugins[2].placement == .end)
@@ -44,19 +48,21 @@ struct StatusLabPluginTests {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: file) }
         try JSONEncoder().encode(manifest).write(to: file)
-        #expect(try StatusPluginManifest.load(file.path).plugins.count == 4)
+        #expect(try StatusPluginManifest.load(file.path).plugins.count == 5)
     }
 
     @Test func invalidCustomPluginsAreSkippedAndTotalIsCapped() {
         var settings = StatusLabPluginSettings()
         settings.custom = [
             .init(id: "clock", executable: "/bin/echo"),       // reserved id
+            .init(id: "battery", executable: "/bin/echo"),     // reserved id
             .init(id: "relative", executable: "bin/echo"),     // not absolute
             .init(id: "off", executable: "/bin/echo", enabled: false),
         ] + (1...10).map { .init(id: "p\($0)", executable: "/bin/echo") }
         let ids = settings.manifest(helpers: helpers, interface: "en0", locale: "en").plugins.map(\.id)
         #expect(ids.count == 8)
-        #expect(!ids.contains("relative") && !ids.contains("off") && ids.filter { $0 == "clock" }.count == 1)
+        #expect(!ids.contains("relative") && !ids.contains("off") && ids.filter { $0 == "clock" }.count == 1 &&
+                ids.filter { $0 == "battery" }.count == 1)
     }
 
     @Test func legacyCPUGraphSettingIsKept() throws {
@@ -65,6 +71,22 @@ struct StatusLabPluginTests {
         #expect(settings.stats.graphStyle == .lines)
         let fresh = try JSONDecoder().decode(StatusLabPluginSettings.self, from: Data("{}".utf8))
         #expect(fresh.stats.graphStyle == .blocks)
+        // Settings from before 0.9.7 get the battery and combined network and disk graphs.
+        #expect(fresh.battery == .init() && fresh.stats.activity == .combined)
+    }
+
+    @Test func mirroredSeriesAreValidated() throws {
+        func frame(_ extra: String) -> Data {
+            Data(#"{"version":1,"widgets":[{"id":"net","label":"NET","value":"1k","color":"50FA7B","bars":[0.5]\#(extra)}]}"#.utf8)
+        }
+        let widget = try StatusPluginFrame.decode(frame(#","mirror":[0.25],"mirrorColor":"FFB86C","mirrorValue":"2k""#)).widgets[0]
+        #expect(widget.mirror == [0.25] && widget.mirrorColor == "FFB86C" && widget.mirrorValue == "2k")
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#","mirror":[2]"#)) }
+        #expect(try StatusPluginFrame.decode(frame(#","level":0.5,"mirrorLevel":1"#)).widgets[0].level == 0.5)
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#","level":-0.1"#)) }
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#","mirrorLevel":1.5"#)) }
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#","mirrorColor":"orange""#)) }
+        #expect(throws: StatusPluginError.self) { try StatusPluginFrame.decode(frame(#","mirrorValue":"a\u001bb""#)) }
     }
 
     @Test func symbolsAreNamesOnly() throws {
@@ -130,17 +152,17 @@ struct StatusLabPluginTests {
         return folder
     }
 
-    let validPackage: [String: Any] = ["id": "battery", "name": "Battery", "version": "1.0.0",
+    let validPackage: [String: Any] = ["id": "uptime", "name": "Uptime", "version": "1.0.0",
                                        "description": "Charge", "author": "Me", "executable": "run.sh",
                                        "position": "trailing", "protocol": 1,
-                                       "homepage": "https://example.com/battery"]
+                                       "homepage": "https://example.com/uptime"]
 
     @Test func pluginPackagesLoadIntoPluginEntries() throws {
         let folder = try package(validPackage)
         defer { try? FileManager.default.removeItem(at: folder) }
         let plugin = try PluginPackage.load(folder).plugin(installedAt: folder)
-        #expect(plugin.id == "battery")
-        #expect(plugin.displayName == "Battery")
+        #expect(plugin.id == "uptime")
+        #expect(plugin.displayName == "Uptime")
         #expect(plugin.executable == folder.appendingPathComponent("run.sh").path)
         #expect(plugin.position == .trailing)
         #expect(plugin.package == folder.path)
@@ -162,6 +184,7 @@ struct StatusLabPluginTests {
         #expect(try failure([:]) == nil)
         #expect(try failure(["id": "Bad Id"]) != nil)
         #expect(try failure(["id": "clock"]) != nil)
+        #expect(try failure(["id": "battery"]) != nil)
         #expect(try failure(["executable": "../run.sh"]) != nil)
         #expect(try failure(["executable": "/bin/sh"]) != nil)
         #expect(try failure(["executable": "missing.sh"]) != nil)
@@ -185,16 +208,16 @@ struct StatusLabPluginTests {
 
     @Test func bundledExamplePackageIsValid() throws {
         let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .appendingPathComponent("../../StatusLab/Plugins/battery").standardizedFileURL
+            .appendingPathComponent("../../StatusLab/Plugins/load-average").standardizedFileURL
         let package = try PluginPackage.load(folder)
-        #expect(package.id == "battery")
+        #expect(package.id == "load-average")
     }
 
     @Test func pluginLimitIsReported() {
         var settings = StatusLabPluginSettings()
         settings.custom = (1...7).map { .init(id: "p\($0)", executable: "/bin/p\($0)") }
-        #expect(!StatusLabPluginSettings.limitReached(draft: settings, id: "p5"))
-        #expect(StatusLabPluginSettings.limitReached(draft: settings, id: "p6"))
+        #expect(!StatusLabPluginSettings.limitReached(draft: settings, id: "p4"))
+        #expect(StatusLabPluginSettings.limitReached(draft: settings, id: "p5"))
         #expect(!StatusLabPluginSettings.limitReached(draft: settings, id: "unknown"))
     }
 

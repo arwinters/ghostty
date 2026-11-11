@@ -71,6 +71,17 @@ struct StatusPluginFrame: Decodable {
         /// Optional SF Symbol name shown before the value, e.g. "cloud.sun.fill". A name
         /// only, never an image or markup; unknown names simply show nothing.
         let symbol: String?
+        /// Optional second series drawn downward from the middle, below `bars` or `history`
+        /// (for example upload under download), normalized to 0...1.
+        let mirror: [Double]?
+        /// Optional hex RRGGBB of the mirrored series and its value.
+        let mirrorColor: String?
+        /// Optional second value, shown under `value` in `mirrorColor`.
+        let mirrorValue: String?
+        /// Optional fill level 0...1, drawn as a small meter after `value`; with
+        /// `mirrorLevel`, a second row shows `mirrorValue` and its meter.
+        let level: Double?
+        let mirrorLevel: Double?
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -90,6 +101,11 @@ struct StatusPluginFrame: Decodable {
                   (widget.history?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
                   (widget.bars?.count ?? 0) <= 64 &&
                   (widget.bars?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
+                  (widget.mirror?.count ?? 0) <= 64 &&
+                  (widget.mirror?.allSatisfy { $0.isFinite && (0...1).contains($0) } ?? true) &&
+                  (widget.mirrorColor.map { $0.utf8.count == 6 && UInt32($0, radix: 16) != nil } ?? true) &&
+                  (widget.mirrorValue.map { plain($0, limit: 64) } ?? true) &&
+                  [widget.level, widget.mirrorLevel].allSatisfy { $0.map { $0.isFinite && (0...1).contains($0) } ?? true } &&
                   (widget.symbol.map { name in
                       !name.isEmpty && name.count <= 64 &&
                           name.unicodeScalars.allSatisfy { CharacterSet.lowercaseLetters.contains($0) && $0.isASCII ||

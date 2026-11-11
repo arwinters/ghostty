@@ -23,6 +23,11 @@ the plugin showed before:
 | `bars` | no | Up to 64 numbers in 0…1, drawn as blocks (for example one per CPU core) |
 | `barColors` | no | One `RRGGBB` per entry in `bars` |
 | `symbol` | no | An SF Symbol name such as `cloud.sun.fill`, drawn before the value |
+| `mirror` | no | Up to 64 numbers in 0…1, drawn downward under `bars` or `history` (for example upload under download) |
+| `mirrorColor` | no | `RRGGBB` of the mirrored series and `mirrorValue` |
+| `mirrorValue` | no | Up to 64 characters, shown under `value` |
+| `level` | no | A number in 0…1, drawn as a small meter after `value` |
+| `mirrorLevel` | no | A number in 0…1, the meter of `mirrorValue` |
 
 At most 12 widgets per plugin and 16 KiB per record. Text is shown as plain text, never
 interpreted as markup, commands or terminal escapes.
@@ -43,13 +48,13 @@ To share a plugin, put it in a folder with a `plugin.json`:
 
 ```json
 {
-  "id": "battery",
-  "name": "Battery",
+  "id": "load-average",
+  "name": "Load Average",
   "version": "1.0.0",
-  "description": "Charge and charging state of the battery.",
+  "description": "The 1, 5 and 15 minute load averages of this Mac.",
   "author": "Your Name",
-  "homepage": "https://github.com/you/ghostty-battery",
-  "executable": "battery.sh",
+  "homepage": "https://github.com/you/ghostty-load-average",
+  "executable": "load.sh",
   "arguments": [],
   "position": "trailing",
   "protocol": 1
@@ -58,7 +63,7 @@ To share a plugin, put it in a folder with a `plugin.json`:
 
 | Field | Required | Rules |
 | --- | --- | --- |
-| `id` | yes | 1–64 lowercase letters, digits, `.`, `-`, `_`; not `system-stats`, `weather` or `clock` |
+| `id` | yes | 1–64 lowercase letters, digits, `.`, `-`, `_`; not `system-stats`, `weather`, `clock` or `battery` |
 | `name` | yes | 1–64 characters |
 | `version` | yes | 1–32 characters |
 | `executable` | yes | A path inside the folder, executable (`chmod +x`); links may not lead outside it |
@@ -72,7 +77,7 @@ To share a plugin, put it in a folder with a `plugin.json`:
 Publish the folder, for example as a GitHub repository. Users install it with **Plugin
 Manager › Install Plugin…**, which checks the package and copies it into the app, so it
 keeps working when the download is moved. Installing the same `id` again updates it.
-[`Plugins/battery`](Plugins/battery) is a complete example.
+[`Plugins/load-average`](Plugins/load-average) is a complete example in a few lines of `sh`.
 
 A plain executable can also be added without a package: **Plugin Manager › Add
 Executable…**.
@@ -81,8 +86,9 @@ Executable…**.
 
 | Plugin | Source | Data |
 | --- | --- | --- |
-| System Stats | [`Plugins/system-stats.swift`](Plugins/system-stats.swift) | CPU per core, memory, network, disk space and activity. Local only. |
+| System Stats | [`Plugins/system-stats.swift`](Plugins/system-stats.swift) | CPU per core, memory, memory and disk space as meters, network and disk activity (combined or separate). Local only. |
 | Weather | [`Plugins/weather.swift`](Plugins/weather.swift) | Current conditions from Open-Meteo for a place you choose; only its coordinates are sent. |
+| Battery | [`Plugins/battery.swift`](Plugins/battery.swift) | Charge, time left and charging state from macOS (IOKit). Local only. |
 | Clock | [`Plugins/clock.swift`](Plugins/clock.swift) | Date and time from a locale-aware template. |
 
 Build one with `swiftc -O Plugins/clock.swift -o clock`.

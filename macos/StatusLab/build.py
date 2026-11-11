@@ -26,7 +26,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 PLUGINS = HERE / "Plugins"
-HELPERS = ("system-stats", "weather", "clock")
+HELPERS = ("system-stats", "weather", "clock", "battery")
 
 
 def run(command, **kwargs):

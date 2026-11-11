@@ -21,12 +21,20 @@ struct StatusLabPluginSettings: Codable, Equatable {
             case blocks
         }
 
+        enum ActivityStyle: String, Codable, CaseIterable {
+            /// One graph each for network and disk: download/read grows up, upload/write grows down.
+            case combined
+            /// Download, upload, read and write as four measurements.
+            case separate
+        }
+
         var enabled = true
         var position = Position.leading
         /// A network interface name, or "auto" for the default route's interface.
         var interface = "auto"
         /// Graph style for every measurement: compact blocks or line graphs.
         var graphStyle = GraphStyle.blocks
+        var activity = ActivityStyle.combined
         var disk = true
     }
 
@@ -51,6 +59,13 @@ struct StatusLabPluginSettings: Codable, Equatable {
         var seconds = false
 
         var effectiveTemplate: String { seconds ? template + "ss" : template }
+    }
+
+    struct Battery: Codable, Equatable {
+        var enabled = true
+        var position = Position.trailing
+        /// Time remaining on battery, or until full while charging.
+        var time = true
     }
 
     struct Tmux: Codable, Equatable {
@@ -94,10 +109,11 @@ struct StatusLabPluginSettings: Codable, Equatable {
     var stats = Stats()
     var weather = Weather()
     var clock = Clock()
+    var battery = Battery()
     var tmux = Tmux()
     var custom: [Custom] = []
 
-    static let builtInIDs: Set<String> = ["system-stats", "weather", "clock"]
+    static let builtInIDs: Set<String> = ["system-stats", "weather", "clock", "battery"]
 
     // MARK: Manifest
 
@@ -120,6 +136,7 @@ struct StatusLabPluginSettings: Codable, Equatable {
 
         if stats.enabled {
             var arguments = [resolvedInterface, "--graph", stats.graphStyle == .blocks ? "blocks" : "lines"]
+            if stats.activity == .separate { arguments += ["--activity", "separate"] }
             if !stats.disk { arguments.append("--no-disk") }
             plugins.append(.init(id: "system-stats", executable: helper("system-stats"),
                                  arguments: arguments, position: stats.position.rawValue))
@@ -134,6 +151,10 @@ struct StatusLabPluginSettings: Codable, Equatable {
             if weather.fahrenheit { arguments.append("--fahrenheit") }
             plugins.append(.init(id: "weather", executable: helper("weather"),
                                  arguments: arguments, position: weather.position.rawValue))
+        }
+        if battery.enabled {
+            plugins.append(.init(id: "battery", executable: helper("battery"),
+                                 arguments: battery.time ? [] : ["--no-time"], position: battery.position.rawValue))
         }
         if clock.enabled {
             plugins.append(.init(id: "clock", executable: helper("clock"),
@@ -156,7 +177,7 @@ struct StatusLabPluginSettings: Codable, Equatable {
         let manifest = settings.manifest(helpers: URL(fileURLWithPath: "/"), interface: "en0", locale: "en")
         let wanted = settings.custom.contains { $0.id == id && $0.enabled && isValid($0) } ||
             (id == "system-stats" && settings.stats.enabled) || (id == "weather" && settings.weather.enabled) ||
-            (id == "clock" && settings.clock.enabled)
+            (id == "clock" && settings.clock.enabled) || (id == "battery" && settings.battery.enabled)
         return wanted && !manifest.plugins.contains { $0.id == id }
     }
 
@@ -416,6 +437,7 @@ extension StatusLabPluginSettings {
         stats = c.value(.stats, defaults.stats)
         weather = c.value(.weather, defaults.weather)
         clock = c.value(.clock, defaults.clock)
+        battery = c.value(.battery, defaults.battery)
         tmux = c.value(.tmux, defaults.tmux)
         custom = c.value(.custom, defaults.custom)
     }
@@ -433,6 +455,7 @@ extension StatusLabPluginSettings.Stats {
         // 0.5.0 stored this as "cpuGraph".
         let legacy = try? decoder.container(keyedBy: LegacyKeys.self).decodeIfPresent(GraphStyle.self, forKey: .cpuGraph)
         graphStyle = c.value(.graphStyle, legacy ?? defaults.graphStyle)
+        activity = c.value(.activity, defaults.activity)
         disk = c.value(.disk, defaults.disk)
     }
 }
@@ -456,6 +479,16 @@ extension StatusLabPluginSettings.Clock {
         position = c.value(.position, defaults.position)
         template = c.value(.template, defaults.template)
         seconds = c.value(.seconds, defaults.seconds)
+    }
+}
+
+extension StatusLabPluginSettings.Battery {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Self()
+        enabled = c.value(.enabled, defaults.enabled)
+        position = c.value(.position, defaults.position)
+        time = c.value(.time, defaults.time)
     }
 }
 

@@ -1,0 +1,11 @@
+{
+  "id": "load-average",
+  "name": "Load Average",
+  "version": "1.0.0",
+  "description": "The 1, 5 and 15 minute load averages of this Mac.",
+  "author": "Ghostty Status Lab",
+  "executable": "load.sh",
+  "arguments": [],
+  "position": "leading",
+  "protocol": 1
+}

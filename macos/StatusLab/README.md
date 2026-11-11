@@ -7,13 +7,13 @@ normal Ghostty and leaves it untouched.
 **Not an official Ghostty release and not a pull request.** I am sharing it to start a
 conversation about which of these ideas could fit Ghostty.
 
-![Ghostty Status Lab: splits with Claude Code and Codex in tmux, the right-click menu and the status bar](screenshot.png)
+![Ghostty Status Lab: Claude Code in a tmux pane next to two project panes, above the status bar with CPU, memory and disk, network and disk activity, weather, battery and the time](screenshot.png)
 
 ## Features
 
 | | |
 | --- | --- |
-| **Status bar** | CPU per core, memory, network, disk, weather and the time below the splits, outside the terminal grid. Every item is a plugin. |
+| **Status bar** | CPU per core, memory and disk space, network and disk activity (in and out in one graph), weather, battery and the time below the splits, outside the terminal grid. Every item is a plugin. |
 | **Plugin Manager** | Every plugin, built-in or installed, with its version and whether it runs. Turn plugins on or off, place them left or right, install plugin packages. ⌥⌘P |
 | **Workspaces** | Your windows, tabs, splits, directories and recent output always belong to a workspace that saves itself. Reopens at launch, also after a crash. Switch workspaces, open earlier versions or a backup. ⇧⌘S |
 | **tmux panes** | Sessions that keep running when Ghostty quits or crashes, can be attached from any terminal, and come back with their history after a restart. |

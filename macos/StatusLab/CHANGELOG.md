@@ -1,5 +1,24 @@
 # Status Lab changelog
 
+## 0.9.7 — 2026-11-11
+
+- Battery is a built-in plugin: charge, time left (or until full) and charging state,
+  read from macOS (IOKit) instead of parsing `pmset`. On by default, right of the
+  weather; shows nothing on a Mac without a battery. Orange at 20%, red at 10%.
+- Network and disk activity each in one widget: download and reads grow up, upload and
+  writes grow down, on one scale, with both rates stacked beside it in bold colors:
+  blue and red for the network, green and magenta for the disk. System Stats › Network
+  and disk activity › Combined (default) or Separate.
+- Memory and disk space share one compact widget: two rows, each with a percentage and a
+  small meter that turns red above 90%.
+- CPU cores are easier to tell apart: performance cores bright cyan, efficiency cores
+  amber, with a small gap between the two groups.
+- Status protocol: optional `mirror`, `mirrorColor` and `mirrorValue` fields for a
+  two-way graph, and `level` / `mirrorLevel` for meters; plugins that do not use them are
+  unaffected.
+- The example plugin package is now Load Average (`Plugins/load-average`, plain sh);
+  `battery` is a built-in id.
+
 ## 0.9.6 — 2026-11-11
 
 - Transparency: the status bar and tab strip follow `background-opacity`, so a
