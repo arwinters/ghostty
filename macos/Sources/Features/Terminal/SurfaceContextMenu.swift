@@ -57,6 +57,9 @@ extension Ghostty.SurfaceView {
         let moreItem = menu.addItem(withTitle: "More Splits", action: nil, keyEquivalent: "")
         moreItem.submenu = more
         moreItem.setImageIfDesired(systemSymbolName: "rectangle.split.2x2")
+        if inSplit {
+            add("Close Split", #selector(closeSurface(_:)), symbol: "xmark.rectangle")
+        }
 
         // Working directory
         if let directory = contextDirectory {
