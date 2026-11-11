@@ -9,6 +9,7 @@
   the options. The default configuration now uses `background-opacity = 0.85`,
   `background-blur = 20` and `background-opacity-cells = true`.
 - Screenshots keep a see-through terminal see-through.
+- README with screenshots of the app, the Plugin Manager and the Session Manager.
 
 ## 0.9.5 — 2026-11-11
 

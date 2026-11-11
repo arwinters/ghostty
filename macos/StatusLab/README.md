@@ -7,7 +7,7 @@ normal Ghostty and leaves it untouched.
 **Not an official Ghostty release and not a pull request.** I am sharing it to start a
 conversation about which of these ideas could fit Ghostty.
 
-<!-- Screenshot follows: ![Ghostty Status Lab](screenshot.png) -->
+![Ghostty Status Lab: splits with Claude Code and Codex in tmux, the right-click menu and the status bar](screenshot.png)
 
 ## Features
 
@@ -15,13 +15,23 @@ conversation about which of these ideas could fit Ghostty.
 | --- | --- |
 | **Status bar** | CPU per core, memory, network, disk, weather and the time below the splits, outside the terminal grid. Every item is a plugin. |
 | **Plugin Manager** | Every plugin, built-in or installed, with its version and whether it runs. Turn plugins on or off, place them left or right, install plugin packages. ⌥⌘P |
-| **Workspaces** | Your windows, tabs, splits, directories and recent output always belong to a workspace that saves itself. Reopens at launch, also after a crash. Switch workspaces, open earlier versions. ⇧⌘S |
+| **Workspaces** | Your windows, tabs, splits, directories and recent output always belong to a workspace that saves itself. Reopens at launch, also after a crash. Switch workspaces, open earlier versions or a backup. ⇧⌘S |
 | **tmux panes** | Sessions that keep running when Ghostty quits or crashes, can be attached from any terminal, and come back with their history after a restart. |
 | **AI sessions** | Right-click a pane › New AI Session › Claude Code, Codex or any tool you configure, in that pane's directory, in a tmux session. A missing tool installs with Homebrew from the menu, with live progress. |
 | **Context menu** | Right-click (also inside tmux): copy and paste, splits and tabs, the pane's directory, tmux, AI sessions, workspaces. |
 | **Screenshots** | Right-click › Screenshot › This Pane, This Tab or This Window. Drawn by Ghostty itself (no screen recording permission), plain or framed with rounded corners and a backdrop, copied and saved as PNG. |
 | **Restart Terminal** | Revive a hung pane without closing the window: stops everything on its terminal and starts a fresh shell in the same place. |
 | **Tab strip** | Compact tabs that blend with the background; drag to reorder; hidden with the menu bar in fullscreen. |
+
+<p>
+  <img src="plugin-manager.png" width="49%" alt="Plugin Manager: built-in plugins with their version and state, a switch per plugin, and buttons to install a plugin package or add an executable">
+  <img src="session-manager.png" width="49%" alt="Session Manager: the open workspace with its windows, tabs and panes, including tmux sessions, and the other workspaces">
+</p>
+
+**Plugin Manager** (⌥⌘P): what is installed and running, with a page per plugin for its
+settings. **Session Manager** (⇧⌘S): the open workspace and its layout, other
+workspaces, a backup of every launch, and whether to reopen the last workspace and
+save terminal output.
 
 ## Install
 
