@@ -45,6 +45,9 @@ Everything is a normal Ghostty configuration. On first launch the app writes
 split keybindings and session restore. Edit it like any Ghostty configuration and reload
 with ⇧⌘, .
 
+Transparency is plain Ghostty configuration (`background-opacity`, `background-blur`,
+`background-opacity-cells`); the status bar and tab strip follow it.
+
 Status Lab adds one option:
 
 ```ini

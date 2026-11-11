@@ -7,6 +7,8 @@ import SwiftUI
 struct TerminalTabStrip: View {
     @ObservedObject var model: TerminalTabStripModel
     let background: Color
+    /// `background-opacity`: the strip is as see-through as the terminal below it.
+    var opacity: Double = 1
     /// The fullscreen titlebar copy is shown regardless of `model.visible`.
     var ignoresVisibility = false
 
@@ -42,7 +44,7 @@ struct TerminalTabStrip: View {
             .frame(height: geometry.size.height)
         }
         .frame(height: model.layout.height)
-        .background(background)
+        .background(TerminalChromeBackground(color: background, opacity: opacity))
         .opacity(model.isKey ? 1 : 0.65)
         .animation(.easeOut(duration: 0.12), value: model.tabs)
         .animation(.easeOut(duration: 0.12), value: dropIndex)

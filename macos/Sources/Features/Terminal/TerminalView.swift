@@ -77,7 +77,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
             ZStack {
                 VStack(spacing: 0) {
                     if let tabStrip {
-                        TerminalTabStrip(model: tabStrip, background: ghostty.config.backgroundColor)
+                        TerminalTabStrip(model: tabStrip, background: ghostty.config.backgroundColor,
+                                         opacity: ghostty.config.backgroundOpacity)
                     }
 
                     // If we're running in debug mode we show a warning so that users
@@ -116,6 +117,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         StatusPluginBar(
                             manifest: manifest,
                             background: ghostty.config.backgroundColor,
+                            opacity: ghostty.config.backgroundOpacity,
                             surface: focusedSurface ?? lastFocusedSurface?.value)
                     } else if SessionManager.shared.enabled {
                         SessionRecoveryBar()

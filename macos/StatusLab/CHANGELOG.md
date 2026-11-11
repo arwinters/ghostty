@@ -1,5 +1,14 @@
 # Status Lab changelog
 
+## 0.9.6 — 2026-11-11
+
+- Transparency: the status bar and tab strip follow `background-opacity`, so a
+  see-through window is see-through everywhere, with `background-blur` (including the
+  macOS 26 glass styles) behind them too. They turn opaque with the window, such as in
+  native fullscreen. Configured only in the configuration; `status-lab.config` explains
+  the options.
+- Screenshots keep a see-through terminal see-through.
+
 ## 0.9.5 — 2026-11-11
 
 - Fix: after the right-click menu, a tmux pane could start selecting text and scrolling

@@ -212,6 +212,8 @@ final class Screenshots: ObservableObject {
             if root.isFlipped { rect.origin.y = bounds.height - rect.maxY }
             let pixels = CGRect(x: rect.minX * scale, y: rect.minY * scale,
                                 width: rect.width * scale, height: rect.height * scale)
+            // Replace what the window drew there: a see-through terminal must stay see-through.
+            context.clear(pixels)
             context.draw(image, in: pixels)
             if split, view !== controller?.focusedSurface, let config, config.unfocusedSplitOpacity > 0 {
                 context.setFillColor(NSColor(config.unfocusedSplitFill).withAlphaComponent(config.unfocusedSplitOpacity).cgColor)

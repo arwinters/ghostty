@@ -4,6 +4,8 @@ import SwiftUI
 struct StatusPluginBar: View {
     let manifest: String
     let background: Color
+    /// `background-opacity`: the bar is as see-through as the terminal above it.
+    var opacity: Double = 1
     let surface: Ghostty.SurfaceView?
     @ObservedObject private var host = StatusPluginHost.shared
 
@@ -41,7 +43,7 @@ struct StatusPluginBar: View {
         }
         .font(.system(size: 11, design: .monospaced))
         .frame(height: 30)
-        .background(background)
+        .background(TerminalChromeBackground(color: background, opacity: opacity))
         .overlay(alignment: .top) { Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1) }
         // One shared host: plugins run once for all windows and stop with the last bar.
         .onAppear { host.acquire(manifest: manifest) }
