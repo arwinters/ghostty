@@ -196,7 +196,7 @@ struct StatusPluginBar: View {
                         Circle()
                             .fill(failed ? Color.orange : Color.green.opacity(0.8))
                             .frame(width: 6, height: 6)
-                        TextButton("Sessions", help: "\(sessions.message) — open the Session Manager (⇧⌘S)") {
+                        TextButton(sessions.activeName ?? "Sessions", help: "Workspace · \(sessions.message) — open the Session Manager (⇧⌘S)") {
                             sessions.showSessions()
                         }
                     }

@@ -76,17 +76,16 @@ extension Ghostty.SurfaceView {
         if let tmux { menu.addItem(tmux) }
         if sessions {
             let submenu = NSMenu()
-            let save = submenu.addItem(withTitle: "Save Workspace…",
-                                       action: #selector(SessionManager.promptSaveWorkspace(_:)), keyEquivalent: "")
-            save.target = SessionManager.shared
-            save.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
+            SessionManager.shared.addWorkspaceItems(to: submenu)
+            submenu.addItem(.separator())
             let manager = submenu.addItem(withTitle: "Session Manager…",
                                           action: #selector(SessionManager.showSessions), keyEquivalent: "")
             manager.target = SessionManager.shared
             manager.setImageIfDesired(systemSymbolName: "square.stack.3d.up")
-            let item = menu.addItem(withTitle: "Sessions", action: nil, keyEquivalent: "")
+            let item = menu.addItem(withTitle: SessionManager.shared.activeName.map { "Workspace: \($0)" } ?? "Workspaces",
+                                    action: nil, keyEquivalent: "")
             item.submenu = submenu
-            item.setImageIfDesired(systemSymbolName: "clock.arrow.circlepath")
+            item.setImageIfDesired(systemSymbolName: "square.stack.3d.up")
         }
 
         // Terminal

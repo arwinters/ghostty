@@ -127,6 +127,23 @@ struct SessionTests {
         var other = value; other.id = UUID(); other.date = .distantPast
         #expect(other.summary.hasSameContent(as: summary))
     }
+    @Test func checkpointsRememberTheirWorkspaceAndOlderFilesStillLoad() throws {
+        let store = store()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        var workspace = fixture(); workspace.name = "Client"
+        var checkpoint = fixture(); checkpoint.workspace = workspace.id
+        try store.save(workspace)
+        try store.save(checkpoint)
+        let summaries = store.summaries()
+        #expect(summaries.first { $0.id == checkpoint.id }?.workspace == workspace.id)
+        #expect(summaries.first { $0.id == workspace.id }?.isWorkspace == true)
+        // Snapshots written before workspaces existed have no "workspace" key.
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture())) as! [String: Any]
+        json.removeValue(forKey: "workspace")
+        let old = try JSONDecoder().decode(SessionSnapshot.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(old.workspace == nil)
+        #expect(old.summary.isAutomatic)
+    }
     @Test func tmuxShellDetection() {
         #expect(TmuxPlugin.isShell("zsh"))
         #expect(TmuxPlugin.isShell("-zsh"))

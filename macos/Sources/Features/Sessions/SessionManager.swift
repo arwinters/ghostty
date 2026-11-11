@@ -4,16 +4,18 @@ import GhosttyKit
 
 /// App-owned persistence is independent of external status-plugin processes.
 ///
+/// The open windows always belong to a workspace. The current workspace saves itself:
+/// opening another workspace saves and closes the open windows first. When no workspace
+/// exists, one is created from the open windows.
+///
 /// Checkpoints are cheap by design. Every few seconds only the layout is compared
 /// (windows, tabs, splits, directories, tmux state): no terminal text is read. A layout
 /// change is saved at once, together with the *visible* screen of each pane. Without a
 /// layout change, the visible screens are saved at most once a minute. The expensive read
-/// of scrollback happens only when quitting, before sleep and when saving a workspace.
-///
-/// Earlier builds read the complete scrollback of every pane every five seconds (up to
-/// `scrollback-limit` bytes each, 50 MB in the Status Lab defaults) and then decoded every
-/// stored snapshot again after each save.
-final class SessionManager: NSObject, ObservableObject {
+/// of scrollback happens only when quitting, before sleep and when switching workspaces.
+/// Every save also keeps an automatic checkpoint: the workspace's earlier versions, and
+/// what the next launch restores.
+final class SessionManager: NSObject, ObservableObject, NSMenuDelegate {
     static let shared = SessionManager()
 
     /// Stored snapshots, newest first. Summaries only: saved output stays on disk.
@@ -26,6 +28,10 @@ final class SessionManager: NSObject, ObservableObject {
     /// The checkpoint this launch restored, so a wrong pick is easy to spot and correct.
     @Published private(set) var restoredAtLaunch: SessionSnapshot.Summary?
     @Published private(set) var storageBytes = 0
+    /// The workspace the open windows are saved in.
+    @Published private(set) var activeWorkspace: UUID? {
+        didSet { UserDefaults.standard.set(activeWorkspace?.uuidString, forKey: Self.activeWorkspaceKey) }
+    }
 
     @Published var restoreOnLaunch: Bool {
         didSet { UserDefaults.standard.set(restoreOnLaunch, forKey: Self.restoreOnLaunchKey) }
@@ -35,6 +41,7 @@ final class SessionManager: NSObject, ObservableObject {
     }
     private static let restoreOnLaunchKey = "StatusLabSessionsRestoreOnLaunch"
     private static let saveOutputKey = "StatusLabSessionsSaveOutput"
+    private static let activeWorkspaceKey = "StatusLabSessionsActiveWorkspace"
 
     /// Seconds between layout comparisons, and between saves of only the visible output.
     static let tickInterval: TimeInterval = 5
@@ -45,7 +52,7 @@ final class SessionManager: NSObject, ObservableObject {
         case layout
         /// Plus the visible screen of each pane: cheap, for periodic checkpoints.
         case visible
-        /// Plus recent scrollback: for quit, sleep and named workspaces.
+        /// Plus recent scrollback: for quit, sleep and switching workspaces.
         case full
     }
 
@@ -57,9 +64,13 @@ final class SessionManager: NSObject, ObservableObject {
     private var lastContent: Data?
     private var lastWrite = Date.distantPast
     private var retainedControllers: [TerminalController] = []
+    /// Windows of the previous workspace while they close; never saved again.
+    private var closing = Set<ObjectIdentifier>()
     private var fontSizes: [UUID: (NSSize, Float)] = [:]
     private var launchSnapshot: SessionSnapshot.Summary?
     private var launchRestorationHandled = false
+    /// Name for the workspace created by the next save, for "New Workspace".
+    private var pendingWorkspaceName: String?
     /// Set once termination is certain. While AppKit tears windows down it detaches tabs
     /// from their groups first, so any later checkpoint would save tabs as separate windows.
     private var terminating = false
@@ -78,11 +89,23 @@ final class SessionManager: NSObject, ObservableObject {
         enabled && (launchSnapshot != nil || launchRestorationHandled || !restoreOnLaunch)
     }
 
+    var workspaces: [SessionSnapshot.Summary] { sessions.filter(\.isWorkspace) }
+    var activeSummary: SessionSnapshot.Summary? {
+        activeWorkspace.flatMap { id in sessions.first { $0.id == id && $0.isWorkspace } }
+    }
+    var activeName: String? { activeSummary?.name }
+
+    /// Automatic checkpoints of a workspace, newest first.
+    func history(of workspace: UUID) -> [SessionSnapshot.Summary] {
+        sessions.filter { $0.isAutomatic && $0.workspace == workspace }
+    }
+
     private override init() {
         store = SessionStore(directory: PluginManager.supportDirectory.appendingPathComponent("sessions"))
         let defaults = UserDefaults.standard
         restoreOnLaunch = defaults.object(forKey: Self.restoreOnLaunchKey) as? Bool ?? true
         saveOutput = defaults.object(forKey: Self.saveOutputKey) as? Bool ?? true
+        activeWorkspace = defaults.string(forKey: Self.activeWorkspaceKey).flatMap(UUID.init(uuidString:))
         super.init()
         // Replay files are read once by the shells of the previous launch's restore. They
         // contain plain terminal output, so do not keep them around.
@@ -99,13 +122,7 @@ final class SessionManager: NSObject, ObservableObject {
         guard enabled, !started else { return }
         started = true
         let menu = NSMenu(title: "Sessions")
-        let item = NSMenuItem(title: "Session Manager…", action: #selector(showSessions), keyEquivalent: "S")
-        item.keyEquivalentModifierMask = [.command, .shift]
-        item.target = self
-        menu.addItem(item)
-        let save = NSMenuItem(title: "Save Workspace…", action: #selector(promptSaveWorkspace(_:)), keyEquivalent: "")
-        save.target = self
-        menu.addItem(save)
+        menu.delegate = self
         let root = NSMenuItem(title: "Sessions", action: nil, keyEquivalent: "")
         root.submenu = menu
         NSApp.mainMenu?.insertBeforeHelp(root)
@@ -123,7 +140,11 @@ final class SessionManager: NSObject, ObservableObject {
     @discardableResult func restoreAtLaunch() -> Bool {
         guard ownsLaunchRestoration else { return false }
         launchRestorationHandled = true
-        guard restoreOnLaunch, let summary = launchSnapshot else { return false }
+        guard restoreOnLaunch, let summary = launchSnapshot else {
+            // A fresh start must not overwrite the workspace that was open last time.
+            if !restoreOnLaunch { activeWorkspace = nil }
+            return false
+        }
         launchSnapshot = nil
         do {
             let snapshot = try store.load(summary.id)
@@ -135,7 +156,10 @@ final class SessionManager: NSObject, ObservableObject {
             // Recovery points are named, so the automatic rotation skips them; keep 10.
             for old in store.summaries().filter(\.isRecoveryPoint).dropFirst(10) { try store.delete(old.id) }
             reload()
-            guard restore(snapshot, atLaunch: true) else { return false }
+            if let workspace = snapshot.workspace, workspaces.contains(where: { $0.id == workspace }) {
+                activeWorkspace = workspace
+            }
+            guard restore(snapshot, skipOpenTmux: false) else { return false }
             restoredAtLaunch = summary
             return true
         } catch { report(error); return false }
@@ -149,13 +173,12 @@ final class SessionManager: NSObject, ObservableObject {
 
     // MARK: Checkpoints
 
-    /// Saves a complete checkpoint now, including recent scrollback. With a name, it is
-    /// kept as a workspace until deleted.
-    func checkpoint(name: String? = nil) {
+    /// Saves the open windows now, including recent scrollback.
+    func checkpoint() {
         guard enabled, !restoring, started, !terminating else { return }
         // Before quit or sleep the status bar polling may be paused; ask tmux once.
         TmuxPlugin.shared.refreshPaths(synchronously: true)
-        save(depth: .full, name: name)
+        save(depth: .full)
     }
 
     private func tick() {
@@ -166,31 +189,49 @@ final class SessionManager: NSObject, ObservableObject {
         let unchanged = summary.map { $0.hasSameContent(as: current) } ?? (current == nil)
         if !unchanged { current = summary }
         guard !windows.isEmpty, let layout = try? Self.encode(windows) else { return }
-        if layout != lastLayout {
-            save(depth: .visible, name: nil, layout: layout)
+        if layout != lastLayout || activeSummary == nil {
+            save(depth: .visible, layout: layout)
         } else if saveOutput, Date().timeIntervalSince(lastWrite) >= Self.outputInterval {
-            save(depth: .visible, name: nil, layout: layout)
+            save(depth: .visible, layout: layout)
         }
     }
 
-    private func save(depth: Depth, name: String?, layout: Data? = nil) {
+    /// Writes an automatic checkpoint and the current workspace, creating the workspace
+    /// when there is none.
+    private func save(depth: Depth, layout: Data? = nil) {
         do {
             let windows = capture(depth)
             // Closing windows, failed startup, or a transient empty UI must never erase the last session.
             guard !windows.isEmpty else { return }
             let content = try Self.encode(windows)
             lastLayout = try layout ?? Self.encode(capture(.layout))
-            guard content != lastContent || name != nil else { return }
-            let snapshot = SessionSnapshot(name: name, windows: windows)
-            try store.save(snapshot)
+            let created = try ensureWorkspace(windows)
+            guard content != lastContent || created != nil,
+                  let workspace = activeSummary else { return }
+            let checkpoint = SessionSnapshot(windows: windows, workspace: workspace.id)
+            try store.save(checkpoint)
+            try store.save(SessionSnapshot(id: workspace.id, date: checkpoint.date, name: workspace.name,
+                                           windows: windows))
             lastContent = content
             lastWrite = Date()
-            lastSaved = snapshot.date
+            lastSaved = checkpoint.date
             failed = false
             reload()
-            message = name.map { "Saved workspace “\($0)”" }
-                ?? "Saved \(snapshot.date.formatted(date: .omitted, time: .standard))"
+            message = created.map { "Created workspace “\($0)”" }
+                ?? "Saved \(checkpoint.date.formatted(date: .omitted, time: .standard))"
         } catch { report(error) }
+    }
+
+    /// Creates a workspace for the open windows when they have none. Returns its name.
+    private func ensureWorkspace(_ windows: [SessionSnapshot.Window]) throws -> String? {
+        guard activeSummary == nil else { return nil }
+        let name = uniqueName(pendingWorkspaceName ?? (workspaces.isEmpty ? "Default" : "Workspace"))
+        let snapshot = SessionSnapshot(name: name, windows: windows)
+        try store.save(snapshot)
+        pendingWorkspaceName = nil
+        activeWorkspace = snapshot.id
+        reload()
+        return name
     }
 
     private static func encode(_ windows: [SessionSnapshot.Window]) throws -> Data {
@@ -206,7 +247,7 @@ final class SessionManager: NSObject, ObservableObject {
         let ordered = TerminalController.all.flatMap { controller in
             (controller.window?.tabbedWindows ?? [controller.window].compactMap { $0 })
                 .compactMap { $0.windowController as? TerminalController }
-        }.filter { seen.insert(ObjectIdentifier($0)).inserted }
+        }.filter { seen.insert(ObjectIdentifier($0)).inserted && !closing.contains(ObjectIdentifier($0)) }
         for controller in ordered {
             guard let window = controller.window, window.isRestorable,
                   let root = controller.surfaceTree.root else { continue }
@@ -278,22 +319,135 @@ final class SessionManager: NSObject, ObservableObject {
         return value
     }
 
-    // MARK: Restoring
+    // MARK: Workspaces
 
-    /// Opens a stored snapshot next to the open windows.
-    func restore(_ summary: SessionSnapshot.Summary) {
+    /// Opens a workspace in place of the open windows, which are saved in the current
+    /// workspace first. Other snapshots open next to the open windows.
+    func open(_ summary: SessionSnapshot.Summary) {
+        guard summary.isWorkspace else { return restore(summary) }
+        guard summary.id != activeWorkspace else {
+            // Already open: bring its windows forward.
+            TerminalController.all.first?.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        guard confirmClosingOpenWindows(for: summary.name ?? "Workspace") else { return }
         do {
             let snapshot = try store.load(summary.id)
-            restore(snapshot, atLaunch: false)
+            // The windows being replaced may show the same tmux sessions: attach them anyway.
+            guard replaceOpenWindows({ restore(snapshot, skipOpenTmux: false) }) else { return }
+            activeWorkspace = summary.id
         } catch {
             reload()
             report(error)
         }
     }
 
-    /// At launch everything is restored. Later, tmux sessions that are already shown in a
-    /// pane are skipped: a second client would mirror the same session in two places.
-    @discardableResult private func restore(_ snapshot: SessionSnapshot, atLaunch: Bool) -> Bool {
+    /// Opens a stored snapshot next to the open windows, as part of the current workspace.
+    func restore(_ summary: SessionSnapshot.Summary) {
+        do {
+            let snapshot = try store.load(summary.id)
+            restore(snapshot, skipOpenTmux: true)
+        } catch {
+            reload()
+            report(error)
+        }
+    }
+
+    /// Starts a new workspace with one new window; the open windows stay in their workspace.
+    @objc func promptNewWorkspace(_ sender: Any?) {
+        guard let name = Self.askName(title: "New Workspace",
+                                      message: "Opens one new window. The open windows are saved in “\(activeName ?? "the current workspace")” and closed.",
+                                      value: "", button: "Create") else { return }
+        guard confirmClosingOpenWindows(for: name) else { return }
+        guard replaceOpenWindows({ openEmptyWindow() }) else { return }
+        activeWorkspace = nil
+        pendingWorkspaceName = Self.clean(name)
+        tick()
+    }
+
+    /// Saves the open windows as a new workspace, which becomes the current one. The
+    /// previous workspace keeps its state from just before.
+    @objc func promptSaveAsWorkspace(_ sender: Any?) {
+        let suggestion = current?.places.prefix(3).joined(separator: ", ") ?? ""
+        guard let name = Self.askName(title: "Save as New Workspace",
+                                      message: "The open windows continue in the new workspace. “\(activeName ?? "The current workspace")” keeps its current state.",
+                                      value: suggestion, button: "Save") else { return }
+        saveAsWorkspace(name)
+    }
+
+    func saveAsWorkspace(_ name: String) {
+        guard enabled, started, !restoring else { return }
+        checkpoint()
+        let windows = capture(.full)
+        guard !windows.isEmpty else { return }
+        do {
+            let snapshot = SessionSnapshot(name: uniqueName(Self.clean(name)), windows: windows)
+            try store.save(snapshot)
+            activeWorkspace = snapshot.id
+            reload()
+            message = "Saved workspace “\(snapshot.name!)”"
+        } catch { report(error) }
+    }
+
+    @objc private func openWorkspaceFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let summary = workspaces.first(where: { $0.id == id }) else { return }
+        open(summary)
+    }
+
+    /// Asks before programs in the open windows are stopped. tmux sessions keep running.
+    private func confirmClosingOpenWindows(for name: String) -> Bool {
+        let running = TerminalController.all.contains { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) }
+        guard running else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Open “\(name)”?"
+        alert.informativeText = "The open windows are saved in “\(activeName ?? "the current workspace")” and closed. " +
+            "Programs running in them stop; tmux sessions keep running."
+        alert.addButton(withTitle: "Open Workspace")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Saves the open windows, opens the new ones, then closes the old ones. Opening first
+    /// keeps the app from quitting when its last window closes.
+    private func replaceOpenWindows(_ openNew: () -> Bool) -> Bool {
+        checkpoint()
+        let old = TerminalController.all
+        guard openNew() else { return false }
+        closing.formUnion(old.map(ObjectIdentifier.init))
+        lastLayout = nil
+        lastContent = nil
+        let undo = (NSApp.delegate as? AppDelegate)?.undoManager
+        undo?.disableUndoRegistration()
+        var groups = Set<ObjectIdentifier>()
+        for controller in old {
+            guard let window = controller.window,
+                  groups.insert(ObjectIdentifier(window.tabGroup ?? window)).inserted else { continue }
+            controller.closeWindowImmediately()
+        }
+        undo?.enableUndoRegistration()
+        return true
+    }
+
+    private func openEmptyWindow() -> Bool {
+        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty, let handle = app.app else { return false }
+        var config = Ghostty.SurfaceConfiguration()
+        config.workingDirectory = NSHomeDirectory()
+        let view = Ghostty.SurfaceView(handle, baseConfig: config)
+        let controller = TerminalController(app, withSurfaceTree: .init(view: view))
+        retainedControllers.append(controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    // MARK: Restoring
+
+    /// Every pane is restored at launch and when switching workspaces. When opening a
+    /// snapshot next to the open windows, tmux sessions that are already shown in a pane are
+    /// skipped: a second client would mirror the same session in two places.
+    @discardableResult private func restore(_ snapshot: SessionSnapshot, skipOpenTmux: Bool) -> Bool {
         guard !restoring, let app = (NSApp.delegate as? AppDelegate)?.ghostty, let handle = app.app else { return false }
         restoring = true
         defer { restoring = false }
@@ -309,7 +463,7 @@ final class SessionManager: NSObject, ObservableObject {
                 let text = saved + (saved.isEmpty ? "" : "\n") + "— Restored session · new shell —\n"
                 try text.write(to: replay.appendingPathComponent(pane.id.uuidString), atomically: true, encoding: .utf8)
             }
-            let skip: Set<String> = atLaunch ? [] : TmuxPlugin.shared.shownSessions
+            let skip: Set<String> = skipOpenTmux ? TmuxPlugin.shared.shownSessions : []
             var groups: [Int: NSWindow] = [:]
             var selected: [NSWindow] = []
             var key: NSWindow?
@@ -411,9 +565,47 @@ final class SessionManager: NSObject, ObservableObject {
 
     func closed(_ controller: TerminalController) {
         retainedControllers.removeAll { $0 === controller }
+        closing.remove(ObjectIdentifier(controller))
         for view in controller.surfaceTree {
             fontSizes.removeValue(forKey: view.id)
             TmuxPlugin.shared.forget(view.id)
+        }
+    }
+
+    // MARK: Menus
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let manager = NSMenuItem(title: "Session Manager…", action: #selector(showSessions), keyEquivalent: "S")
+        manager.keyEquivalentModifierMask = [.command, .shift]
+        manager.target = self
+        menu.addItem(manager)
+        menu.addItem(.separator())
+        addWorkspaceItems(to: menu)
+    }
+
+    /// The workspaces, with the current one checked, and the actions that create one.
+    func addWorkspaceItems(to menu: NSMenu) {
+        if !workspaces.isEmpty {
+            let header = menu.addItem(withTitle: "Workspaces", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            for workspace in workspaces.sorted(by: { ($0.name ?? "").localizedStandardCompare($1.name ?? "") == .orderedAscending }) {
+                let item = menu.addItem(withTitle: workspace.name ?? "Workspace",
+                                        action: #selector(openWorkspaceFromMenu(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = workspace.id
+                item.state = workspace.id == activeWorkspace ? .on : .off
+                item.indentationLevel = 1
+            }
+            menu.addItem(.separator())
+        }
+        for (title, action, symbol) in [
+            ("New Workspace…", #selector(promptNewWorkspace(_:)), "plus.square.on.square"),
+            ("Save as New Workspace…", #selector(promptSaveAsWorkspace(_:)), "square.and.arrow.down"),
+        ] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.setImageIfDesired(systemSymbolName: symbol)
         }
     }
 
@@ -429,26 +621,33 @@ final class SessionManager: NSObject, ObservableObject {
         panel?.makeKeyAndOrderFront(nil)
     }
 
-    /// Asks for a name and saves the open windows as a workspace.
-    @objc func promptSaveWorkspace(_ sender: Any?) {
-        let suggestion = current?.places.prefix(3).joined(separator: ", ") ?? ""
-        guard let name = Self.askName(title: "Save Workspace",
-                                      message: "Saves every open window, tab and pane. Workspaces are kept until you delete them.",
-                                      value: suggestion, button: "Save") else { return }
-        saveWorkspace(name)
-    }
-
-    func saveWorkspace(_ name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        checkpoint(name: trimmed.isEmpty ? "Workspace" : String(trimmed.prefix(80)))
-    }
-
-    /// Removes a stored snapshot.
-    func delete(_ summary: SessionSnapshot.Summary) {
+    /// Removes stored snapshots after confirmation. The current workspace is kept: the
+    /// open windows are saved in it. A deleted workspace takes its earlier versions along.
+    func delete(_ ids: Set<UUID>) {
+        let targets = sessions.filter { ids.contains($0.id) && $0.id != activeWorkspace }
+        guard !targets.isEmpty else { return }
+        let alert = NSAlert()
+        if targets.count == 1, let only = targets.first {
+            alert.messageText = "Delete “\(only.name ?? "checkpoint")”?"
+        } else {
+            alert.messageText = "Delete \(targets.count) items?"
+        }
+        alert.informativeText = targets.contains(where: \.isWorkspace)
+            ? "Workspaces are deleted with their earlier versions. This cannot be undone."
+            : "This cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            try store.delete(summary.id)
+            for target in targets {
+                if target.isWorkspace {
+                    for version in history(of: target.id) { try store.delete(version.id) }
+                }
+                try store.delete(target.id)
+            }
             reload()
-            message = "Deleted “\(summary.name ?? "checkpoint")”"
+            message = targets.count == 1 ? "Deleted “\(targets[0].name ?? "checkpoint")”" : "Deleted \(targets.count) items"
         } catch { report(error) }
     }
 
@@ -457,22 +656,22 @@ final class SessionManager: NSObject, ObservableObject {
         do {
             for old in sessions.filter(\.isAutomatic).dropFirst() { try store.delete(old.id) }
             reload()
-            message = "Deleted older automatic checkpoints"
+            message = "Deleted earlier versions"
         } catch { report(error) }
     }
 
-    /// Renames a workspace, or keeps a checkpoint or recovery point as a named workspace.
+    /// Renames a workspace, or keeps a backup as a new workspace.
     func rename(_ summary: SessionSnapshot.Summary) {
         let keep = !summary.isWorkspace
         guard let name = Self.askName(title: keep ? "Keep as Workspace" : "Rename Workspace",
-                                      message: keep ? "Named workspaces are kept until you delete them." : "",
+                                      message: keep ? "Workspaces are kept until you delete them." : "",
                                       value: keep ? summary.places.prefix(3).joined(separator: ", ") : summary.name ?? "",
                                       button: keep ? "Keep" : "Rename") else { return }
         do {
             var snapshot = try store.load(summary.id)
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            snapshot.name = trimmed.isEmpty ? "Workspace" : String(trimmed.prefix(80))
-            // A kept checkpoint becomes a copy; the rotation keeps working on the original.
+            snapshot.name = uniqueName(Self.clean(name), except: keep ? nil : summary.id)
+            snapshot.workspace = nil
+            // A kept backup becomes a copy; the original stays where it was.
             if keep { snapshot.id = UUID() }
             try store.save(snapshot)
             reload()
@@ -489,6 +688,20 @@ final class SessionManager: NSObject, ObservableObject {
         let value = store.summaries()
         if value != sessions { sessions = value }
         if panel?.isVisible == true { storageBytes = store.size() }
+    }
+
+    private static func clean(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Workspace" : String(trimmed.prefix(80))
+    }
+
+    /// The name, or the name with the lowest free number appended.
+    private func uniqueName(_ name: String, except id: UUID? = nil) -> String {
+        let taken = Set(workspaces.filter { $0.id != id }.compactMap { $0.name?.lowercased() })
+        guard taken.contains(name.lowercased()) else { return name }
+        var number = 2
+        while taken.contains("\(name) \(number)".lowercased()) { number += 1 }
+        return "\(name) \(number)"
     }
 
     private static func askName(title: String, message: String, value: String, button: String) -> String? {
@@ -518,35 +731,32 @@ final class SessionManager: NSObject, ObservableObject {
 
 private struct SessionManagerView: View {
     @ObservedObject var manager: SessionManager
-    @State private var page: Page = .overview
-    @State private var query = ""
+    @State private var page: Page = .workspaces
 
     enum Page: String, CaseIterable, Identifiable {
-        case overview, workspaces, recent, recovery, settings
+        case workspaces, backups, settings
         var id: String { rawValue }
     }
 
-    private var workspaces: [SessionSnapshot.Summary] { manager.sessions.filter(\.isWorkspace) }
-    private var checkpoints: [SessionSnapshot.Summary] { manager.sessions.filter(\.isAutomatic) }
-    private var recovery: [SessionSnapshot.Summary] { manager.sessions.filter(\.isRecoveryPoint) }
+    private var backups: [SessionSnapshot.Summary] { manager.sessions.filter(\.isRecoveryPoint) }
 
     var body: some View {
         ManagerLayout(pages: Page.allCases, selection: $page, row: row) { page in
             switch page {
-            case .overview:
-                OverviewPage(manager: manager, open: { self.page = $0 })
             case .workspaces:
-                SnapshotList(manager: manager, snapshots: workspaces, query: $query,
-                             empty: "No saved workspaces yet. Save the open windows from the overview, the Sessions menu or a pane's right-click menu.",
-                             footer: "Named workspaces are kept until you delete them.")
-            case .recent:
-                SnapshotList(manager: manager, snapshots: checkpoints, query: $query,
-                             empty: "No automatic checkpoints yet.",
-                             footer: "Saved when the layout changes and at most once a minute for screen output; complete scrollback when quitting and before sleep. The latest 20 are kept; the newest one opens at the next launch.")
-            case .recovery:
-                SnapshotList(manager: manager, snapshots: recovery, query: $query,
-                             empty: "No recovery points yet.",
-                             footer: "Each launch keeps a copy of the session it restored, so it is never lost when the windows change. The latest 10 are kept.")
+                WorkspacesPage(manager: manager)
+            case .backups:
+                SnapshotSection(
+                    manager: manager, title: "Before launch", items: backups,
+                    empty: "No backups yet.",
+                    footer: "At every launch a copy is kept of the windows that were open before, so they are never lost. The latest 10 are kept.")
+                if let restored = manager.restoredAtLaunch {
+                    Section {
+                        Text("This launch restored the windows of \(SnapshotRow.time(restored.date)). Not what you expected? Open an earlier version from a workspace's menu, or a backup above.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             case .settings:
                 SettingsPage(manager: manager)
             }
@@ -560,139 +770,150 @@ private struct SessionManagerView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
-            Button("Save Checkpoint Now") { manager.checkpoint() }
-                .help("Save the open windows, including recent scrollback, as an automatic checkpoint")
+            Button("Save Now") { manager.checkpoint() }
+                .help("Save the open windows in the current workspace, including recent scrollback")
         }
-        .onChange(of: page) { _ in query = "" }
     }
 
     private func row(_ page: Page) -> ManagerLayoutRow {
         switch page {
-        case .overview: .init(title: "Overview", symbol: "rectangle.3.group")
-        case .workspaces: .init(title: "Workspaces", symbol: "square.stack.3d.up", badge: "\(workspaces.count)")
-        case .recent: .init(title: "Recent", symbol: "clock.arrow.circlepath", badge: "\(checkpoints.count)")
-        case .recovery: .init(title: "Before Launch", symbol: "lifepreserver", badge: "\(recovery.count)")
+        case .workspaces: .init(title: "Workspaces", symbol: "square.stack.3d.up", badge: "\(manager.workspaces.count)")
+        case .backups: .init(title: "Backups", symbol: "lifepreserver", badge: backups.isEmpty ? nil : "\(backups.count)")
         case .settings: .init(title: "Settings", symbol: "gearshape")
         }
     }
 }
 
-/// What is open now, what was restored, and the quickest actions.
-private struct OverviewPage: View {
+/// The current workspace, then the others.
+private struct WorkspacesPage: View {
     @ObservedObject var manager: SessionManager
-    let open: (SessionManagerView.Page) -> Void
-    @State private var name = ""
 
     var body: some View {
         Section {
-            if let current = manager.current {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 18) {
-                        Stat(value: current.windows, label: "window", symbol: "macwindow")
-                        Stat(value: current.tabs.count, label: "tab", symbol: "rectangle.topthird.inset.filled")
-                        Stat(value: current.panes, label: "pane", symbol: "rectangle.split.2x1")
-                        if current.tmuxPanes > 0 {
-                            Stat(value: current.tmuxPanes, label: "tmux pane", symbol: "rectangle.split.3x1")
-                        }
-                    }
-                    Chips(summary: current)
-                    LayoutPreview(summary: current)
-                }
-                .padding(.vertical, 4)
-            } else {
-                Text("No terminal windows are open.").foregroundStyle(.secondary)
-            }
+            CurrentWorkspace(manager: manager)
         } header: {
-            HStack {
-                Text("Open now")
-                Spacer()
-                if let saved = manager.lastSaved {
-                    Text("Last saved \(Text(saved, style: .relative)) ago")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text("Open now")
         }
 
-        Section {
-            HStack {
-                TextField("Workspace name", text: $name, prompt: Text(manager.current?.places.prefix(3).joined(separator: ", ") ?? "Client project"))
-                    .onSubmit(save)
-                Button("Save Workspace", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(manager.current == nil)
-            }
-        } header: {
-            Text("Save as workspace")
-        } footer: {
-            Text("A workspace keeps windows, tabs, splits, directories, tmux sessions and recent output until you delete it.")
-        }
-
-        if let restored = manager.restoredAtLaunch {
-            Section {
-                SnapshotRow(manager: manager, summary: restored, compact: true)
-            } header: {
-                Text("Restored at this launch")
-            } footer: {
-                Text("Not the session you expected? Earlier checkpoints are under Recent; the windows that were open before this launch are under Before Launch.")
-            }
-        }
-
-        Section("Recent") {
-            let recent = Array(manager.sessions.filter(\.isAutomatic).prefix(3))
-            if recent.isEmpty { Text("No automatic checkpoints yet.").foregroundStyle(.secondary) }
-            ForEach(recent) { SnapshotRow(manager: manager, summary: $0, compact: true) }
-            if manager.sessions.filter(\.isAutomatic).count > 3 {
-                Button("Show all checkpoints") { open(.recent) }
-                    .buttonStyle(.link)
-            }
-        }
-    }
-
-    private func save() {
-        let fallback = manager.current?.places.prefix(3).joined(separator: ", ") ?? ""
-        manager.saveWorkspace(name.isEmpty ? fallback : name)
-        name = ""
-        open(.workspaces)
-    }
-
-    private struct Stat: View {
-        let value: Int
-        let label: String
-        let symbol: String
-
-        var body: some View {
-            Label {
-                Text("\(value) \(label)\(value == 1 ? "" : "s")").monospacedDigit()
-            } icon: {
-                Image(systemName: symbol).foregroundStyle(.tint)
-            }
+        SnapshotSection(
+            manager: manager, title: "Other workspaces",
+            items: manager.workspaces.filter { $0.id != manager.activeWorkspace },
+            empty: "Workspaces you create appear here. Opening one saves and closes the open windows.",
+            footer: "Each workspace saves itself while it is open.") {
+            Button("New Workspace…") { manager.promptNewWorkspace(nil) }
+                .buttonStyle(.link)
         }
     }
 }
 
-/// A searchable list of stored snapshots, grouped by day.
-private struct SnapshotList: View {
+private struct CurrentWorkspace: View {
     @ObservedObject var manager: SessionManager
-    let snapshots: [SessionSnapshot.Summary]
-    @Binding var query: String
-    let empty: String
-    let footer: String
-
-    private var filtered: [SessionSnapshot.Summary] { snapshots.filter { $0.matches(query) } }
-
-    private var days: [(Date, [SessionSnapshot.Summary])] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: filtered) { calendar.startOfDay(for: $0.date) }
-        return grouped.keys.sorted(by: >).map { ($0, grouped[$0]!) }
-    }
+    @State private var expanded = false
 
     var body: some View {
-        if !snapshots.isEmpty {
-            Section {
+        let summary = manager.current
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(manager.activeName ?? "No workspace yet")
+                        .font(.headline)
+                    if let summary {
+                        Text(SnapshotRow.counts(summary) + places(summary))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("No terminal windows are open.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if let saved = manager.lastSaved {
+                    Text("Saved \(Text(saved, style: .relative)) ago")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Menu {
+                    if let active = manager.activeSummary {
+                        Button("Rename…") { manager.rename(active) }
+                        VersionsMenu(manager: manager, workspace: active.id)
+                    }
+                    Button("Save as New Workspace…") { manager.promptSaveAsWorkspace(nil) }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+            if let summary {
+                DisclosureGroup(isExpanded: $expanded) {
+                    LayoutPreview(summary: summary).padding(.top, 4)
+                } label: {
+                    Text("Layout").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.leading, 38)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func places(_ summary: SessionSnapshot.Summary) -> String {
+        let places = summary.places.prefix(3).joined(separator: ", ")
+        return places.isEmpty ? "" : " · " + places
+    }
+}
+
+/// Earlier versions of a workspace, opened next to the open windows.
+private struct VersionsMenu: View {
+    @ObservedObject var manager: SessionManager
+    let workspace: UUID
+
+    var body: some View {
+        let versions = Array(manager.history(of: workspace).prefix(12))
+        Menu("Open Earlier Version") {
+            ForEach(versions) { version in
+                Button(SnapshotRow.time(version.date) + " — " + SnapshotRow.counts(version)) {
+                    manager.restore(version)
+                }
+            }
+        }
+        .disabled(versions.isEmpty)
+    }
+}
+
+/// A list of stored snapshots with search and a selection mode for deleting several.
+private struct SnapshotSection<Accessory: View>: View {
+    @ObservedObject var manager: SessionManager
+    let title: String
+    let items: [SessionSnapshot.Summary]
+    let empty: String
+    let footer: String
+    @ViewBuilder var accessory: () -> Accessory
+    @State private var query = ""
+    @State private var selecting = false
+    @State private var selection = Set<UUID>()
+
+    private var filtered: [SessionSnapshot.Summary] {
+        items.filter { $0.matches(query) }.sorted { lhs, rhs in
+            lhs.isWorkspace ? (lhs.name ?? "").localizedStandardCompare(rhs.name ?? "") == .orderedAscending
+                : lhs.date > rhs.date
+        }
+    }
+
+    private var allSelected: Bool { !filtered.isEmpty && filtered.allSatisfy { selection.contains($0.id) } }
+
+    var body: some View {
+        Section {
+            if items.count > 6 {
                 HStack {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search", text: $query, prompt: Text("Search by folder, title, tmux session or name"))
+                    TextField("Search", text: $query, prompt: Text("Search by name, folder or tmux session"))
                         .textFieldStyle(.plain)
                     if !query.isEmpty {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
@@ -701,46 +922,67 @@ private struct SnapshotList: View {
                     }
                 }
             }
-        }
-        if snapshots.isEmpty {
-            Section {
-                Text(empty).foregroundStyle(.secondary)
-            } footer: {
-                Text(footer)
+            if selecting {
+                HStack {
+                    Button(allSelected ? "Deselect All" : "Select All") {
+                        if allSelected { selection.removeAll() } else { selection = Set(filtered.map(\.id)) }
+                    }
+                    Text(selection.isEmpty ? "None selected" : "\(selection.count) selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Delete", role: .destructive) {
+                        manager.delete(selection)
+                    }
+                    .disabled(selection.isEmpty)
+                }
             }
-        } else if filtered.isEmpty {
-            Section {
+            if items.isEmpty {
+                Text(empty).foregroundStyle(.secondary)
+            } else if filtered.isEmpty {
                 Text("Nothing matches “\(query)”.").foregroundStyle(.secondary)
             }
-        }
-        ForEach(Array(days.enumerated()), id: \.element.0) { index, day in
-            Section {
-                ForEach(day.1) { SnapshotRow(manager: manager, summary: $0, compact: false) }
-            } header: {
-                Text(Self.dayTitle(day.0))
-            } footer: {
-                if index == days.count - 1 { Text(footer) }
+            ForEach(filtered) { summary in
+                SnapshotRow(manager: manager, summary: summary, selecting: selecting,
+                            selected: Binding(get: { selection.contains(summary.id) },
+                                              set: { if $0 { selection.insert(summary.id) } else { selection.remove(summary.id) } }))
             }
+        } header: {
+            HStack {
+                Text(title)
+                Spacer()
+                accessory()
+                if !items.isEmpty {
+                    Button(selecting ? "Done" : "Select") {
+                        selecting.toggle()
+                        selection.removeAll()
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+        } footer: {
+            Text(footer)
+        }
+        .onChange(of: items) { items in
+            // Drop deleted items from the selection; leave selection mode when nothing is left.
+            selection.formIntersection(items.map(\.id))
+            if items.isEmpty { selecting = false }
         }
     }
+}
 
-    static func dayTitle(_ day: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(day) { return "Today" }
-        if calendar.isDateInYesterday(day) { return "Yesterday" }
-        return day.formatted(date: .complete, time: .omitted)
+extension SnapshotSection where Accessory == EmptyView {
+    init(manager: SessionManager, title: String, items: [SessionSnapshot.Summary], empty: String, footer: String) {
+        self.init(manager: manager, title: title, items: items, empty: empty, footer: footer) { EmptyView() }
     }
 }
 
 private struct SnapshotRow: View {
     @ObservedObject var manager: SessionManager
     let summary: SessionSnapshot.Summary
-    let compact: Bool
+    let selecting: Bool
+    @Binding var selected: Bool
     @State private var expanded = false
-
-    private var symbol: String {
-        summary.isWorkspace ? "square.stack.3d.up.fill" : summary.isRecoveryPoint ? "lifepreserver" : "clock"
-    }
 
     private var title: String {
         if summary.isWorkspace, let name = summary.name { return name }
@@ -749,8 +991,17 @@ private struct SnapshotRow: View {
     }
 
     private var detail: String {
-        var parts = [Self.time(summary.date)]
-        parts.append("\(summary.windows) window\(summary.windows == 1 ? "" : "s")")
+        var parts = [Self.counts(summary)]
+        if summary.isWorkspace {
+            let places = summary.places.prefix(3).joined(separator: ", ")
+            if !places.isEmpty { parts.append(places) }
+        }
+        parts.append(Self.time(summary.date))
+        return parts.joined(separator: " · ")
+    }
+
+    static func counts(_ summary: SessionSnapshot.Summary) -> String {
+        var parts = ["\(summary.windows) window\(summary.windows == 1 ? "" : "s")"]
         if summary.tabs.count != summary.windows {
             parts.append("\(summary.tabs.count) tab\(summary.tabs.count == 1 ? "" : "s")")
         }
@@ -767,79 +1018,66 @@ private struct SnapshotRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
-                    Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                if selecting {
+                    Toggle("", isOn: $selected)
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
+                } else {
+                    Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 12)
+                    }
+                    .buttonStyle(.plain)
+                    .help(expanded ? "Hide layout" : "Show layout")
                 }
-                .buttonStyle(.plain)
-                .help(expanded ? "Hide layout" : "Show layout")
 
-                Image(systemName: symbol)
-                    .foregroundStyle(summary.isWorkspace ? Color.accentColor : .secondary)
-                    .frame(width: 18)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).fontWeight(.medium).lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).lineLimit(1)
                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    if !compact { Chips(summary: summary) }
                 }
 
                 Spacer(minLength: 8)
 
-                Button("Restore") { manager.restore(summary) }
-                    .help("Open these windows next to the current ones. tmux sessions that are already open are not opened twice.")
-                Menu {
-                    Button(summary.isWorkspace ? "Rename…" : "Keep as Workspace…") { manager.rename(summary) }
-                    Divider()
-                    Button("Delete", role: .destructive) { manager.delete(summary) }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                if !selecting {
+                    Button(summary.isWorkspace ? "Open" : "Restore") { manager.open(summary) }
+                        .help(summary.isWorkspace
+                            ? "Save and close the open windows, and open this workspace"
+                            : "Open these windows next to the current ones")
+                    Menu {
+                        if summary.isWorkspace {
+                            Button("Add to Open Windows") { manager.restore(summary) }
+                            VersionsMenu(manager: manager, workspace: summary.id)
+                            Divider()
+                            Button("Rename…") { manager.rename(summary) }
+                        } else {
+                            Button("Keep as Workspace…") { manager.rename(summary) }
+                        }
+                        Divider()
+                        Button("Delete…", role: .destructive) { manager.delete([summary.id]) }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("More actions")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("More actions")
             }
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) { manager.restore(summary) }
+            .onTapGesture(count: 2) { if !selecting { manager.open(summary) } }
+            .onTapGesture { if selecting { selected.toggle() } }
 
-            if expanded {
+            if expanded && !selecting {
                 LayoutPreview(summary: summary)
-                    .padding(.leading, 40)
+                    .padding(.leading, 22)
             }
         }
-        .padding(.vertical, 3)
-    }
-}
-
-/// Folder names and tmux profiles, as small capsules.
-private struct Chips: View {
-    let summary: SessionSnapshot.Summary
-
-    var body: some View {
-        let places = Array(summary.places.prefix(4))
-        let more = summary.places.count - places.count
-        HStack(spacing: 5) {
-            ForEach(places, id: \.self) { chip($0, symbol: "folder", tint: .blue) }
-            if more > 0 { chip("+\(more)", symbol: nil, tint: .gray) }
-            ForEach(summary.profiles, id: \.self) { chip($0, symbol: "rectangle.split.3x1", tint: .green) }
-        }
-    }
-
-    private func chip(_ text: String, symbol: String?, tint: Color) -> some View {
-        HStack(spacing: 3) {
-            if let symbol { Image(systemName: symbol).imageScale(.small) }
-            Text(text).lineLimit(1)
-        }
-        .font(.caption)
-        .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(Capsule().fill(tint.opacity(0.14)))
-        .foregroundStyle(tint)
     }
 }
 
@@ -900,15 +1138,13 @@ private struct SettingsPage: View {
     var body: some View {
         Section {
             Toggle(isOn: $manager.restoreOnLaunch) {
-                Text("Restore the last session at launch")
-                Text("Otherwise Ghostty starts with one new window. Checkpoints are still saved.")
+                Text("Reopen the last workspace at launch")
+                Text("Otherwise Ghostty starts with one new window in a new workspace.")
             }
             Toggle(isOn: $manager.saveOutput) {
                 Text("Save terminal output")
-                Text("Restored panes show their earlier output above the new shell. Off saves only the layout and directories.")
+                Text("Restored panes show their earlier output above the new shell.")
             }
-        } header: {
-            Text("Behavior")
         }
 
         Section {
@@ -916,26 +1152,12 @@ private struct SettingsPage: View {
             HStack {
                 Button("Show in Finder") { manager.revealStorage() }
                 Spacer()
-                Button("Delete Older Checkpoints", role: .destructive) { manager.deleteOlderCheckpoints() }
+                Button("Delete Earlier Versions", role: .destructive) { manager.deleteOlderCheckpoints() }
                     .disabled(manager.sessions.filter(\.isAutomatic).count < 2)
-                    .help("Keeps the newest checkpoint, which the next launch restores, and every workspace")
+                    .help("Keeps every workspace and the newest version, which the next launch opens")
             }
-        } header: {
-            Text("Storage")
         } footer: {
-            Text("Stored privately for your macOS account (folder 0700, files 0600). Saved output is plain text and is shown, never executed.")
-        }
-
-        Section("What is restored") {
-            Label("Windows, tabs and their order, sizes and fullscreen", systemImage: "macwindow.on.rectangle")
-            Label("Splits, ratios, focused and zoomed pane", systemImage: "rectangle.split.2x1")
-            Label("Working directory, titles, tab colors and font size", systemImage: "folder")
-            Label("Recent output per pane, as plain text", systemImage: "text.alignleft")
-            Label("tmux panes: reattached after a crash; after a restart recreated in their last directory, with the profile's resume command only while that program was still running", systemImage: "rectangle.split.3x1")
-        }
-        Section("What is not restored") {
-            Label("Running programs in normal panes; they start as new shells", systemImage: "xmark.circle")
-            Label("Colors and full-screen program state in saved output", systemImage: "xmark.circle")
+            Text("Windows, tabs, splits, directories, titles, tmux sessions and recent output are restored; programs in normal panes start as new shells. Stored privately for your macOS account.")
         }
     }
 }
@@ -949,7 +1171,7 @@ struct SessionRecoveryBar: View {
             Text(manager.message)
                 .foregroundColor(manager.failed ? .orange : .secondary)
                 .lineLimit(1)
-            Button("Sessions") { manager.showSessions() }
+            Button(manager.activeName ?? "Sessions") { manager.showSessions() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.tint)
                 .help("Open the Session Manager (⇧⌘S)")

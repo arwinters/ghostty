@@ -7,6 +7,9 @@ struct SessionSnapshot: Codable, Identifiable {
     var date = Date()
     var name: String?
     var windows: [Window]
+    /// The workspace an automatic checkpoint belongs to; nil in workspaces themselves,
+    /// in recovery points of older builds and in checkpoints of older builds.
+    var workspace: UUID?
 
     struct Window: Codable {
         var group: Int
@@ -132,6 +135,7 @@ struct SessionSnapshot: Codable, Identifiable {
         let tabs: [Tab]
         let panes: Int
         let tmuxPanes: Int
+        let workspace: UUID?
 
         struct Tab: Equatable {
             let title: String?
@@ -159,6 +163,7 @@ struct SessionSnapshot: Codable, Identifiable {
             }
             panes = snapshot.paneCount
             tmuxPanes = snapshot.windows.flatMap { $0.tree.panes }.filter { $0.tmux != nil }.count
+            workspace = snapshot.workspace
         }
 
         func hasSameContent(as other: Self?) -> Bool {
