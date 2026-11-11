@@ -30,7 +30,7 @@ enum StatusLabBootstrap {
             try "macos-status-plugins = \(manifest.path)\n".write(to: runtime, atomically: true, encoding: .utf8)
             let config = support.appendingPathComponent("config.ghostty")
             if !manager.fileExists(atPath: config.path) {
-                let defaults = try String(contentsOf: resources.appendingPathComponent("status-lab-defaults.config"), encoding: .utf8)
+                let defaults = try String(contentsOf: resources.appendingPathComponent("status-lab.config"), encoding: .utf8)
                 try (defaults + "\n# Generated plugin paths for this copy of the app\nconfig-file = \(runtime.path)\n")
                     .write(to: config, atomically: true, encoding: .utf8)
             }

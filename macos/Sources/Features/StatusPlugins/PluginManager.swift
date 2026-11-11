@@ -31,7 +31,7 @@ final class PluginManager: ObservableObject {
     /// Installed plugin packages, one folder each.
     static var packagesDirectory: URL { supportDirectory.appendingPathComponent("plugins") }
     static var version: String { Bundle.main.object(forInfoDictionaryKey: "StatusLabVersion") as? String ?? "" }
-    static let documentation = URL(string: "https://github.com/arwinters/ghostty/blob/status-lab/examples/status-plugins/README.md")!
+    static let documentation = URL(string: "https://github.com/arwinters/ghostty/blob/status-lab/macos/StatusLab/PLUGINS.md")!
 
     private init() {
         settings = Self.loadSettings()

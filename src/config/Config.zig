@@ -1091,7 +1091,7 @@ palette: Palette = .{},
 /// the native split tree; plugins cannot supply views or terminal input.
 ///
 /// This experimental interface is not stable. See
-/// `examples/status-plugins/README.md` for setup, protocol, and limitations.
+/// `macos/StatusLab/PLUGINS.md` for the protocol and limitations.
 /// Only implemented on macOS. Changes apply when the configured path changes
 /// or a new terminal container is opened.
 @"macos-status-plugins": ?[:0]const u8 = null,

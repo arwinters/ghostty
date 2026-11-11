@@ -185,7 +185,7 @@ struct StatusLabPluginTests {
 
     @Test func bundledExamplePackageIsValid() throws {
         let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .appendingPathComponent("../../../examples/status-plugins/packages/battery").standardizedFileURL
+            .appendingPathComponent("../../StatusLab/Plugins/battery").standardizedFileURL
         let package = try PluginPackage.load(folder)
         #expect(package.id == "battery")
     }

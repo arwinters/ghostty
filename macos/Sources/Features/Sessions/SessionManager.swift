@@ -78,7 +78,7 @@ final class SessionManager: NSObject, ObservableObject, NSMenuDelegate {
 
     var enabled: Bool {
         // This experimental feature ships in Status Lab builds only (see
-        // examples/status-plugins/status-lab), which run beside a normal Ghostty.
+        // macos/StatusLab), which run beside a normal Ghostty.
         PluginManager.enabled &&
             (NSApp.delegate as? AppDelegate)?.ghostty.config.windowSaveState != "never"
     }

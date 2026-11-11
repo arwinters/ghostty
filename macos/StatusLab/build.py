@@ -5,8 +5,8 @@ The app gets its own name, bundle identifier, configuration and Application Supp
 directory, so it runs beside a normal Ghostty without touching it. The tracked source
 tree is never modified: macos/ is copied to a build directory and adjusted there.
 
-    python3 examples/status-plugins/status-lab/build.py
-    python3 examples/status-plugins/status-lab/build.py --name "Ghostty Status Lab" \\
+    python3 macos/StatusLab/build.py
+    python3 macos/StatusLab/build.py --name "Ghostty Status Lab" \\
         --bundle-id com.example.ghostty.statuslab --output ~/Desktop
 
 Requirements: the toolchain from HACKING.md (Zig, Xcode with the Metal toolchain,
@@ -24,8 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[2]
-PLUGINS = HERE.parent
+REPO = HERE.parents[1]
+PLUGINS = HERE / "Plugins"
 HELPERS = ("system-stats", "weather", "clock")
 
 
@@ -90,9 +90,9 @@ def package(source: Path, target: Path, name: str, bundle_id: str, helpers: Path
     destination.mkdir(exist_ok=True)
     for helper in HELPERS:
         shutil.copy2(helpers / helper, destination / helper)
-    shutil.copy2(HERE / "status-lab-defaults.config", target / "Contents/Resources/status-lab-defaults.config")
+    shutil.copy2(HERE / "status-lab.config", target / "Contents/Resources/status-lab.config")
 
-    version = (PLUGINS / "STATUS_LAB_VERSION").read_text().strip()
+    version = (HERE / "VERSION").read_text().strip()
     major, minor, patch = map(int, version.split("."))
     core = re.search(r'\.version = "([^"]+)"', (REPO / "build.zig.zon").read_text()).group(1)
     head = git("rev-parse", "HEAD")
@@ -149,7 +149,7 @@ def main():
                 shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
     build.mkdir(parents=True, exist_ok=True)
     shutil.copytree(REPO / "macos", build / "macos", symlinks=True, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("build", ".DS_Store"))
+                    ignore=shutil.ignore_patterns("build", "StatusLab", ".DS_Store"))
     for folder in ("images", "zig-out/share"):
         if (build / folder).exists():
             shutil.rmtree(build / folder)

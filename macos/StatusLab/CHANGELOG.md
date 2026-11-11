@@ -14,6 +14,10 @@
   configuration errors, and buttons to open and reload the configuration.
 - The pane menu no longer shows AutoFill and Services entries (such as OpenPGP), which do
   not apply to a terminal.
+- Status Lab now lives in `macos/StatusLab` (was `examples/status-plugins`), so the
+  repository keeps Ghostty's own layout. The README describes the features briefly;
+  PLUGINS.md covers writing and sharing plugins. The default configuration is
+  `status-lab.config`.
 
 ## 0.9.1 — 2026-11-11
 
