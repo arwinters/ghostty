@@ -18,8 +18,17 @@ final class StatusPluginHost: ObservableObject {
         var placement = StatusPluginPlacement.leading
     }
 
+    /// The state of one running plugin, for the Plugin Manager.
+    enum Status: Equatable {
+        case starting
+        case running
+        case failed(String)
+    }
+
     @Published private(set) var items: [Item] = []
     @Published private(set) var errors: [String] = []
+    /// By plugin id; only plugins of the current manifest that are running or retrying.
+    @Published private(set) var statuses: [String: Status] = [:]
     private var sessions: [ManagedSession] = []
     private var timer: Timer?
     /// Status bars currently showing this host's items, and the manifest they show.
@@ -85,6 +94,10 @@ final class StatusPluginHost: ObservableObject {
         var startedAt = ProcessInfo.processInfo.systemUptime
         var id: String { plugin.id }
         var widgets: [StatusPluginFrame.Widget] { session?.widgets ?? [] }
+        var status: Status {
+            if let failure { return .failed(failure) }
+            return session?.hasFrame == true ? .running : .starting
+        }
 
         init(_ plugin: StatusPluginManifest.Plugin) {
             self.plugin = plugin
@@ -243,9 +256,11 @@ final class StatusPluginHost: ObservableObject {
             let errors = startupErrors + self.sessions.compactMap { session in
                 session.failure.map { "\(session.id): \($0)" }
             }
+            let statuses = Dictionary(self.sessions.map { ($0.id, $0.status) }, uniquingKeysWith: { first, _ in first })
             // Publishing redraws every status bar: only do so when something changed.
             if items != self.items { self.items = items }
             if errors != self.errors { self.errors = errors }
+            if statuses != self.statuses { self.statuses = statuses }
         }
         timer?.tolerance = 0.1
         if let timer { RunLoop.main.add(timer, forMode: .common) }
@@ -258,6 +273,7 @@ final class StatusPluginHost: ObservableObject {
         sessions = []
         if !items.isEmpty { items = [] }
         if !errors.isEmpty { errors = [] }
+        if !statuses.isEmpty { statuses = [:] }
     }
 
     deinit {

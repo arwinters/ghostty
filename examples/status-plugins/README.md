@@ -91,11 +91,11 @@ no timer, and no child process. The setting contains an absolute path to a JSON
 manifest, with at most eight plugins and unique IDs. Executable paths must also
 be absolute. `arguments` is an array; no shell parsing or tilde expansion occurs.
 
-Each visible terminal container starts its own set of plugins. The bar spans
-that container's native splits. It occupies 30 points outside the terminal grid,
-so shell output and full-screen applications cannot overwrite it. On narrow
-windows the bar scrolls horizontally rather than squeezing terminal columns.
-Closing/hiding the container stops its plugins; showing it starts them again.
+All windows share one set of plugin processes. The bar spans each container's native
+splits. It occupies 30 points outside the terminal grid, so shell output and full-screen
+applications cannot overwrite it. On narrow windows the bar scrolls horizontally rather
+than squeezing terminal columns. The plugins stop when the last bar closes and start
+again with the next one.
 
 Changing the configured manifest **path** reloads the host. When the host reports
 an error, Reload Configuration or the bar's **Restart plugins** button restarts
@@ -156,6 +156,55 @@ A manifest entry may set `"position": "leading"` (default, after the working dir
 `"position": "end"` (far right, after the app's controls; the clock's default).
 Other values reject the manifest.
 
+## Plugin packages
+
+A plugin package is how a plugin is shared: a folder with a `plugin.json` and the
+executable it names. Status Lab's Plugin Manager installs it with **Install Plugin…**,
+which validates the package and copies the folder into the app's Application Support
+directory (`plugins/<id>-<random>/`), so the plugin keeps working when the download is
+moved. Installing a package with the same `id` again updates it and keeps the user's
+choices; uninstalling removes the copy when the change is applied.
+
+```json
+{
+  "id": "battery",
+  "name": "Battery",
+  "version": "1.0.0",
+  "description": "Charge and charging state of the battery.",
+  "author": "Your Name",
+  "homepage": "https://github.com/you/ghostty-battery",
+  "executable": "battery.sh",
+  "arguments": [],
+  "position": "trailing",
+  "protocol": 1
+}
+```
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `id` | yes | 1–64 lowercase letters, digits, `.`, `-`, `_`; not `system-stats`, `weather` or `clock` |
+| `name` | yes | 1–64 characters, shown in the Plugin Manager |
+| `version` | yes | 1–32 characters, for example `1.2.0` |
+| `executable` | yes | Path inside the folder; it must be executable (`chmod +x`). Links may not lead outside the folder. |
+| `description` | no | Up to 300 characters |
+| `author` | no | Up to 64 characters |
+| `homepage` | no | An `https` link |
+| `arguments` | no | Up to 32 strings, passed as-is (no shell) |
+| `position` | no | `leading` (default), `trailing` or `end` |
+| `protocol` | no | Status protocol version; only `1` exists |
+
+[`packages/battery`](packages/battery) is a complete example in plain `sh`. To publish a
+plugin, put its folder in a repository with a short README; users download the folder
+and install it. There is no catalog, automatic download or update check, and no
+signature verification: users should install only plugins they trust. A downloaded
+compiled executable may need to be allowed under System Settings › Privacy & Security;
+scripts run through their interpreter and are not affected.
+
+Test a plugin by running it in a terminal: it should print one JSON record per line, at
+least every ten seconds. Ghostty starts it with a minimal environment
+(`PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `LANG`, `GHOSTTY_PLUGIN_PROTOCOL=1`), the root
+directory as working directory and no stdin, so do not rely on your shell profile.
+
 ## Bundled plugins (Status Lab builds)
 
 | Plugin | Source | Data |
@@ -165,9 +214,10 @@ Other values reject the manifest.
 | Clock | `clock.swift` | Day, date, year and time from a locale-aware `DateFormatter` template. |
 
 Each is a single Swift file: `swiftc -O weather.swift -o weather`. They double as
-examples for community plugins. Status Lab's Plugin Manager writes the manifest from
+examples for other plugins. Status Lab's Plugin Manager writes the manifest from
 its settings (`plugins.settings.json` → `plugins.generated.json` in the app's
-Application Support directory) and lets users add any other protocol v1 executable.
+Application Support directory), installs plugin packages and lets users add any other
+protocol v1 executable.
 
 ## tmux panes (Status Lab builds)
 

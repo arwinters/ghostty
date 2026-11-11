@@ -1,5 +1,35 @@
 # Status Lab changelog
 
+## 0.9.0 — 2026-11-11
+
+- Based on the latest Ghostty `main` (709 upstream commits since 0.8.4); Zig 0.17.
+- Plugin Manager:
+  - An **Installed** page lists every plugin with its kind (built-in, installed package or
+    executable), version and live state (running, starting, off, error, waiting for
+    Apply), with a switch per plugin and the number of status bar slots in use.
+  - Every plugin, built-in or added, has its own page with a header (description,
+    version, author, website, state, switch). "Community Plugins" is gone: added plugins
+    are listed with the built-in ones.
+  - Plugin packages: a folder with `plugin.json` and an executable. **Install Plugin…**
+    validates it and copies it into the app; reinstalling updates it, uninstalling
+    removes the copy. Example: `packages/battery`.
+  - Unapplied changes are highlighted in the footer.
+- Session Manager:
+  - Workspaces: the open windows always belong to a workspace, which saves itself; one
+    is created when none exists. Opening a workspace saves and closes the open windows
+    first; tmux sessions keep running. New Workspace, Save as New Workspace, earlier
+    versions per workspace, and a selection mode to delete several at once.
+  - Restores the right session after a restart: a tmux pane where Claude Code had
+    exited no longer comes back running `claude --continue`; one odd directory or long
+    output can no longer make every newer checkpoint fail.
+  - Far less work in the background: no scrollback reads every 5 seconds (up to 50 MB
+    per pane before), no re-reading every stored session after each save.
+- One shared set of plugin processes for all windows (before: one per tab), and the bar
+  redraws only when a value changes. tmux is polled every 5 seconds, only while
+  Ghostty is active.
+- Right-click menu in every pane, also inside tmux mouse mode: clipboard, tabs and
+  splits, the pane's directory, tmux, workspaces and terminal actions.
+
 ## 0.8.4 — 2026-10-14
 
 - Fullscreen: the tab strip moves into a titlebar accessory, so it is hidden and appears

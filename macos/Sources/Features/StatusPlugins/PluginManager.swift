@@ -26,6 +26,10 @@ final class PluginManager: ObservableObject {
     static var settingsFile: URL { supportDirectory.appendingPathComponent("plugins.settings.json") }
     static var manifestFile: URL { supportDirectory.appendingPathComponent("plugins.generated.json") }
     static var helpers: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers") }
+    /// Installed plugin packages, one folder each.
+    static var packagesDirectory: URL { supportDirectory.appendingPathComponent("plugins") }
+    static var version: String { Bundle.main.object(forInfoDictionaryKey: "StatusLabVersion") as? String ?? "" }
+    static let documentation = URL(string: "https://github.com/arwinters/ghostty/blob/status-lab/examples/status-plugins/README.md")!
 
     private init() {
         settings = Self.loadSettings()
@@ -67,6 +71,7 @@ final class PluginManager: ObservableObject {
             try encoder.encode(new).write(to: Self.settingsFile, options: .atomic)
             try Self.writeManifest(new)
             settings = new
+            Self.removeUnusedPackages(keeping: new)
             message = "Applied \(Date().formatted(date: .omitted, time: .shortened))"
             rebuildMenu()
             NotificationCenter.default.post(name: .statusPluginsDidChange, object: nil)
@@ -99,6 +104,37 @@ final class PluginManager: ObservableObject {
         NSApp.mainMenu?.insertBeforeHelp(item)
         menuItem = item
         rebuildMenu()
+        Self.removeUnusedPackages(keeping: settings)
+    }
+
+    // MARK: Packages
+
+    /// Copies a plugin package into the app's plugin folder and returns its entry. Every
+    /// install gets a new folder, so a running copy is never changed underneath the host;
+    /// folders no longer used are removed when settings are applied and at launch.
+    func install(from folder: URL) throws -> StatusLabPluginSettings.Custom {
+        let files = FileManager.default
+        try files.createDirectory(at: Self.packagesDirectory, withIntermediateDirectories: true)
+        let package = try PluginPackage.load(folder)
+        let target = Self.packagesDirectory.appendingPathComponent(
+            package.id + "-" + String(UUID().uuidString.prefix(8)).lowercased())
+        try files.copyItem(at: folder, to: target)
+        do {
+            // Validate the copy: it is what will run.
+            return try PluginPackage.load(target).plugin(installedAt: target)
+        } catch {
+            try? files.removeItem(at: target)
+            throw error
+        }
+    }
+
+    static func removeUnusedPackages(keeping settings: StatusLabPluginSettings) {
+        let used = Set(settings.custom.compactMap(\.package).map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: packagesDirectory, includingPropertiesForKeys: nil)) ?? []
+        for entry in entries where !used.contains(entry.standardizedFileURL.path) {
+            try? FileManager.default.removeItem(at: entry)
+        }
     }
 
     private func rebuildMenu() {
@@ -204,36 +240,112 @@ enum WeatherGeocoder {
     }
 }
 
+
 // MARK: - Views
+
+/// What the Plugin Manager shows about a plugin, built-in or added.
+private struct PluginInfo {
+    enum Kind { case builtIn, package, executable }
+
+    let name: String
+    let symbol: String
+    let kind: Kind
+    var version: String?
+    var author: String?
+    var summary: String
+    var homepage: URL?
+
+    static let stats = builtIn("System Stats", "cpu", "CPU, memory, network and disk activity of this Mac. Measured locally; nothing leaves the computer.")
+    static let weather = builtIn("Weather", "cloud.sun", "Current conditions for a place you choose, from Open-Meteo.")
+    static let clock = builtIn("Clock", "clock", "Date and time in the format of your region.")
+    static let tmux = builtIn("tmux", "rectangle.split.3x1", "Panes that run in tmux, such as Claude Code sessions. They keep running when a pane closes or Ghostty crashes.")
+
+    private static func builtIn(_ name: String, _ symbol: String, _ summary: String) -> PluginInfo {
+        .init(name: name, symbol: symbol, kind: .builtIn, version: PluginManager.version, summary: summary)
+    }
+
+    init(name: String, symbol: String, kind: Kind, version: String? = nil, author: String? = nil,
+         summary: String, homepage: URL? = nil) {
+        self.name = name
+        self.symbol = symbol
+        self.kind = kind
+        self.version = version
+        self.author = author
+        self.summary = summary
+        self.homepage = homepage
+    }
+
+    init(_ plugin: StatusLabPluginSettings.Custom) {
+        name = plugin.displayName
+        symbol = plugin.package == nil ? "terminal" : "puzzlepiece.extension"
+        kind = plugin.package == nil ? .executable : .package
+        version = plugin.version
+        author = plugin.author
+        summary = plugin.summary ?? (plugin.package == nil
+            ? "A status protocol v1 executable added by path."
+            : "Installed plugin package.")
+        homepage = plugin.homepage.flatMap(URL.init(string:))
+    }
+
+    var kindTitle: String {
+        switch kind {
+        case .builtIn: "Built-in"
+        case .package: "Installed"
+        case .executable: "Executable"
+        }
+    }
+
+    var meta: String {
+        var parts: [String] = []
+        if let version, !version.isEmpty { parts.append("Version \(version)") }
+        if let author, !author.isEmpty { parts.append("by \(author)") }
+        if kind == .builtIn { parts.append("Ships with Ghostty Status Lab") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// What a plugin is doing now, from the draft and the running host.
+private enum PluginState: Equatable {
+    case running, starting, off, ready
+    case willStart, willStop, willRestart
+    case failed(String)
+    case unavailable(String)
+
+    var title: String {
+        switch self {
+        case .running: "Running"
+        case .starting: "Starting"
+        case .off: "Off"
+        case .ready: "Ready"
+        case .willStart: "Starts when you press Apply"
+        case .willStop: "Stops when you press Apply"
+        case .willRestart: "Restarts with the changes when you press Apply"
+        case .failed(let reason): reason
+        case .unavailable(let reason): reason
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .running, .ready: .green
+        case .starting, .willStart, .willStop, .willRestart: .yellow
+        case .off: .secondary
+        case .failed, .unavailable: .orange
+        }
+    }
+}
 
 private struct PluginManagerView: View {
     @ObservedObject var manager: PluginManager
+    @ObservedObject private var host = StatusPluginHost.shared
+    @ObservedObject private var tmux = TmuxPlugin.shared
     @State private var draft: StatusLabPluginSettings
-    @State private var selection: Section = .stats
+    @State private var page: Page = .installed
 
-    enum Section: String, CaseIterable, Identifiable {
-        case stats, weather, clock, tmux, custom
-        var id: String { rawValue }
-
-        var title: String {
-            switch self {
-            case .stats: "System Stats"
-            case .weather: "Weather"
-            case .clock: "Clock"
-            case .tmux: "tmux"
-            case .custom: "Community Plugins"
-            }
-        }
-
-        var symbol: String {
-            switch self {
-            case .stats: "cpu"
-            case .weather: "cloud.sun"
-            case .clock: "clock"
-            case .tmux: "rectangle.split.3x1"
-            case .custom: "puzzlepiece.extension"
-            }
-        }
+    enum Page: Hashable, Identifiable {
+        case installed, stats, weather, clock, tmux
+        case custom(UUID)
+        var id: Self { self }
     }
 
     init(manager: PluginManager) {
@@ -241,19 +353,41 @@ private struct PluginManagerView: View {
         _draft = State(initialValue: manager.settings)
     }
 
+    private var pages: [Page] {
+        [.installed, .stats, .weather, .clock, .tmux] + draft.custom.map { .custom($0.key) }
+    }
+
     var body: some View {
-        ManagerLayout(pages: Section.allCases, selection: $selection, row: row) { section in
-            switch section {
-            case .stats: StatsSection(settings: $draft.stats)
-            case .weather: WeatherSection(settings: $draft.weather)
-            case .clock: ClockSection(settings: $draft.clock)
-            case .tmux: TmuxSection(settings: $draft.tmux)
-            case .custom: CustomSection(plugins: $draft.custom)
+        ManagerLayout(pages: pages, selection: $page, row: row) { page in
+            switch page {
+            case .installed:
+                InstalledPage(manager: manager, draft: $draft, open: { self.page = $0 }, state: state)
+            case .stats:
+                PluginHeader(info: .stats, enabled: $draft.stats.enabled, state: state(.stats))
+                StatsSection(settings: $draft.stats)
+            case .weather:
+                PluginHeader(info: .weather, enabled: $draft.weather.enabled, state: state(.weather))
+                WeatherSection(settings: $draft.weather)
+            case .clock:
+                PluginHeader(info: .clock, enabled: $draft.clock.enabled, state: state(.clock))
+                ClockSection(settings: $draft.clock)
+            case .tmux:
+                PluginHeader(info: .tmux, enabled: $draft.tmux.enabled, state: state(.tmux))
+                TmuxSection(settings: $draft.tmux)
+            case .custom(let key):
+                if let plugin = draft.custom.first(where: { $0.key == key }) {
+                    let binding = custom(key, fallback: plugin)
+                    PluginHeader(info: PluginInfo(plugin), enabled: binding.enabled, state: state(.custom(key)))
+                    CustomSection(plugin: binding, others: draft.custom.filter { $0.key != key }) {
+                        draft.custom.removeAll { $0.key == key }
+                        self.page = .installed
+                    }
+                }
             }
         } footer: {
-            Text(manager.message ?? "Changes apply to every window when you press Apply.")
+            Text(footerText)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(draft == manager.settings ? Color.secondary : Color.orange)
             Spacer()
             Button("Revert") { draft = manager.settings }
                 .disabled(draft == manager.settings)
@@ -261,19 +395,307 @@ private struct PluginManagerView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft == manager.settings)
         }
+        .onChange(of: draft.custom.map(\.key)) { keys in
+            if case .custom(let key) = page, !keys.contains(key) { page = .installed }
+        }
     }
 
-    private func row(_ section: Section) -> ManagerLayoutRow {
-        .init(title: section.title, symbol: section.symbol, badge: isEnabled(section) ? nil : "Off")
+    private var footerText: String {
+        if draft != manager.settings { return "Unapplied changes. Apply updates every window." }
+        return manager.message ?? "Changes apply to every window when you press Apply."
     }
 
-    private func isEnabled(_ section: Section) -> Bool {
-        switch section {
-        case .stats: draft.stats.enabled
-        case .weather: draft.weather.enabled
-        case .clock: draft.clock.enabled
-        case .tmux: draft.tmux.enabled
-        case .custom: draft.custom.contains { $0.enabled }
+    private func custom(_ key: UUID, fallback: StatusLabPluginSettings.Custom) -> Binding<StatusLabPluginSettings.Custom> {
+        Binding(
+            get: { draft.custom.first { $0.key == key } ?? fallback },
+            set: { value in
+                if let index = draft.custom.firstIndex(where: { $0.key == key }) { draft.custom[index] = value }
+            })
+    }
+
+    private func row(_ page: Page) -> ManagerLayoutRow {
+        let state = state(page)
+        let badge: String? = switch state {
+        case .off, .willStop: "Off"
+        case .failed, .unavailable: "!"
+        default: nil
+        }
+        let color: Color? = if case .failed = state { .orange } else if case .unavailable = state { .orange } else { nil }
+        switch page {
+        case .installed:
+            return .init(title: "Installed", symbol: "square.grid.2x2")
+        case .stats:
+            return .init(title: "System Stats", symbol: PluginInfo.stats.symbol, badge: badge, group: "Plugins", badgeColor: color)
+        case .weather:
+            return .init(title: "Weather", symbol: PluginInfo.weather.symbol, badge: badge, group: "Plugins", badgeColor: color)
+        case .clock:
+            return .init(title: "Clock", symbol: PluginInfo.clock.symbol, badge: badge, group: "Plugins", badgeColor: color)
+        case .tmux:
+            return .init(title: "tmux", symbol: PluginInfo.tmux.symbol, badge: badge, group: "Plugins", badgeColor: color)
+        case .custom(let key):
+            let plugin = draft.custom.first { $0.key == key }
+            return .init(title: plugin?.displayName ?? "Plugin", symbol: plugin.map { PluginInfo($0).symbol } ?? "puzzlepiece.extension",
+                         badge: badge, group: "Plugins", badgeColor: color)
+        }
+    }
+
+    /// Combines the draft (what Apply will do) with the host (what runs now).
+    func state(_ page: Page) -> PluginState {
+        let wanted: Bool
+        let applied: Bool
+        let id: String
+        switch page {
+        case .installed:
+            return .ready
+        case .stats:
+            (wanted, applied, id) = (draft.stats.enabled, manager.settings.stats.enabled, "system-stats")
+        case .weather:
+            (wanted, applied, id) = (draft.weather.enabled, manager.settings.weather.enabled, "weather")
+        case .clock:
+            (wanted, applied, id) = (draft.clock.enabled, manager.settings.clock.enabled, "clock")
+        case .tmux:
+            if !draft.tmux.enabled { return manager.settings.tmux.enabled ? .willStop : .off }
+            if tmux.tmuxPath == nil { return .unavailable("tmux is not installed (brew install tmux)") }
+            return manager.settings.tmux.enabled ? .ready : .willStart
+        case .custom(let key):
+            guard let plugin = draft.custom.first(where: { $0.key == key }) else { return .off }
+            let saved = manager.settings.custom.first { $0.key == key }
+            if plugin.enabled && !StatusLabPluginSettings.isValid(plugin) {
+                return .unavailable("Needs a unique identifier and an absolute executable path")
+            }
+            (wanted, applied, id) = (plugin.enabled, saved?.enabled == true, saved?.id ?? plugin.id)
+            // Changed settings take effect when applied.
+            if wanted, applied, saved != plugin { return .willRestart }
+        }
+        if !wanted { return applied ? .willStop : .off }
+        if !applied { return .willStart }
+        switch host.statuses[id] {
+        case .running: return .running
+        case .starting: return .starting
+        case .failed(let reason): return .failed(reason)
+        case nil:
+            // The host runs at most eight plugins, and only while a status bar is shown.
+            return .unavailable(StatusLabPluginSettings.limitReached(draft: manager.settings, id: id)
+                ? "Not running: at most eight plugins run at once" : "Not running")
+        }
+    }
+}
+
+/// Every plugin at a glance, with the ways to add one.
+private struct InstalledPage: View {
+    @ObservedObject var manager: PluginManager
+    @Binding var draft: StatusLabPluginSettings
+    let open: (PluginManagerView.Page) -> Void
+    let state: (PluginManagerView.Page) -> PluginState
+    @State private var failure: String?
+
+    private var slots: Int {
+        [draft.stats.enabled, draft.weather.enabled, draft.clock.enabled].filter { $0 }.count +
+            draft.custom.filter { $0.enabled && StatusLabPluginSettings.isValid($0) }.count
+    }
+
+    var body: some View {
+        Section {
+            PluginRow(info: .stats, enabled: $draft.stats.enabled, state: state(.stats)) { open(.stats) }
+            PluginRow(info: .weather, enabled: $draft.weather.enabled, state: state(.weather)) { open(.weather) }
+            PluginRow(info: .clock, enabled: $draft.clock.enabled, state: state(.clock)) { open(.clock) }
+            PluginRow(info: .tmux, enabled: $draft.tmux.enabled, state: state(.tmux)) { open(.tmux) }
+            ForEach($draft.custom, id: \.key) { $plugin in
+                PluginRow(info: PluginInfo(plugin), enabled: $plugin.enabled, state: state(.custom(plugin.key))) {
+                    open(.custom(plugin.key))
+                }
+            }
+        } header: {
+            HStack {
+                Text("Installed plugins")
+                Spacer()
+                Text("\(slots) of 8 status bar slots in use")
+                    .foregroundStyle(slots > 8 ? Color.orange : Color.secondary)
+                    .monospacedDigit()
+            }
+        } footer: {
+            Text("Turn a plugin off to stop it; its settings are kept. tmux adds panes and menus, so it does not use a status bar slot.")
+        }
+
+        Section {
+            HStack {
+                Button("Install Plugin…", action: install)
+                Button("Add Executable…", action: addExecutable)
+                Spacer()
+                Link("How to write a plugin", destination: PluginManager.documentation)
+            }
+            if let failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("Add a plugin")
+        } footer: {
+            Text("A plugin package is a folder with a plugin.json and an executable; installing copies it into Ghostty. Plugins run with your permissions and are not sandboxed: only install plugins you trust.")
+        }
+    }
+
+    private func install() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a plugin folder (it contains a plugin.json)."
+        panel.prompt = "Install"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        do {
+            var plugin = try manager.install(from: folder)
+            // Installing the same plugin again updates it and keeps its choices.
+            if let index = draft.custom.firstIndex(where: { $0.id == plugin.id }) {
+                let old = draft.custom[index]
+                plugin.key = old.key
+                plugin.enabled = old.enabled
+                plugin.position = old.position
+                draft.custom[index] = plugin
+            } else {
+                draft.custom.append(plugin)
+            }
+            failure = nil
+            open(.custom(plugin.key))
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+
+    private func addExecutable() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose an executable that writes status protocol v1 to stdout."
+        panel.prompt = "Add"
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let base = url.deletingPathExtension().lastPathComponent
+        let slug = String(base.lowercased().unicodeScalars
+            .map { CharacterSet.alphanumerics.contains($0) && $0.isASCII ? Character($0) : "-" }
+            .prefix(48))
+        var id = slug.isEmpty ? "plugin" : slug
+        let taken = Set(draft.custom.map(\.id)).union(StatusLabPluginSettings.builtInIDs)
+        if taken.contains(id) {
+            var number = 2
+            while taken.contains("\(id)-\(number)") { number += 1 }
+            id = "\(id)-\(number)"
+        }
+        let plugin = StatusLabPluginSettings.Custom(id: id, executable: url.path, name: base)
+        draft.custom.append(plugin)
+        failure = nil
+        open(.custom(plugin.key))
+    }
+}
+
+private struct PluginIcon: View {
+    let symbol: String
+    let size: CGFloat
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.48))
+            .foregroundStyle(.tint)
+            .frame(width: size, height: size)
+            .background(RoundedRectangle(cornerRadius: size * 0.24).fill(Color.accentColor.opacity(0.14)))
+    }
+}
+
+private struct StateLabel: View {
+    let state: PluginState
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(state.color).frame(width: 7, height: 7)
+            Text(state.title).lineLimit(1).truncationMode(.tail)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .help(state.title)
+    }
+}
+
+private struct KindBadge: View {
+    let info: PluginInfo
+
+    var body: some View {
+        Text(info.kindTitle)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+            .foregroundStyle(.secondary)
+    }
+}
+
+private struct PluginRow: View {
+    let info: PluginInfo
+    @Binding var enabled: Bool
+    let state: PluginState
+    let open: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            PluginIcon(symbol: info.symbol, size: 32)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(info.name).fontWeight(.medium)
+                    KindBadge(info: info)
+                    if let version = info.version, !version.isEmpty {
+                        Text(version).font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+                StateLabel(state: state)
+            }
+            Spacer(minLength: 8)
+            Toggle("Enabled", isOn: $enabled)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+            Button(action: open) { Image(systemName: "chevron.right") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tertiary)
+                .help("Settings")
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+    }
+}
+
+/// The top of a plugin page: what it is, whether it runs, and the switch.
+private struct PluginHeader: View {
+    let info: PluginInfo
+    @Binding var enabled: Bool
+    let state: PluginState
+
+    var body: some View {
+        Section {
+            HStack(alignment: .top, spacing: 14) {
+                PluginIcon(symbol: info.symbol, size: 48)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(info.name).font(.title2.weight(.semibold))
+                        KindBadge(info: info)
+                    }
+                    if !info.meta.isEmpty {
+                        Text(info.meta).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(info.summary)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        StateLabel(state: state)
+                        if let homepage = info.homepage {
+                            Link("Website", destination: homepage).font(.caption)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                Spacer(minLength: 8)
+                Toggle("Enabled", isOn: $enabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .help(enabled ? "Turn off" : "Turn on")
+            }
+            .padding(.vertical, 6)
         }
     }
 }
@@ -295,26 +717,25 @@ private struct StatsSection: View {
 
     var body: some View {
         Section {
-            Toggle("Show system stats", isOn: $settings.enabled)
             PositionPicker(position: $settings.position)
-        } footer: {
-            Text("CPU, memory, network and disk measured on this Mac. Nothing leaves the computer.")
-        }
-        Section {
             Picker("Graph style", selection: $settings.graphStyle) {
                 Text("Blocks (compact)").tag(StatusLabPluginSettings.Stats.GraphStyle.blocks)
                 Text("Lines").tag(StatusLabPluginSettings.Stats.GraphStyle.lines)
             }
             Toggle("Show disk space and disk activity", isOn: $settings.disk)
+        } header: {
+            Text("Display")
         } footer: {
             Text(settings.graphStyle == .blocks
-                 ? "CPU: one block per core, performance cores blue and efficiency cores teal. Memory, network and disk: the last 12 seconds. Disk space: a filled meter."
+                 ? "CPU: one block per core, performance cores blue and efficiency cores teal. Memory, network and disk: the last 12 seconds."
                  : "Line graphs of the last 60 seconds.")
         }
         Section {
-            TextField("Network interface", text: $settings.interface, prompt: Text("auto"))
+            TextField("Interface", text: $settings.interface, prompt: Text("auto"))
+        } header: {
+            Text("Network")
         } footer: {
-            Text("Use “auto” for the interface of the default route, or a name such as en0.")
+            Text("“auto” follows the interface of the default route; or enter a name such as en0.")
         }
     }
 }
@@ -328,14 +749,15 @@ private struct WeatherSection: View {
 
     var body: some View {
         Section {
-            Toggle("Show weather", isOn: $settings.enabled)
             PositionPicker(position: $settings.position)
             Picker("Units", selection: $settings.fahrenheit) {
                 Text("Celsius").tag(false)
                 Text("Fahrenheit").tag(true)
             }
+        } header: {
+            Text("Display")
         } footer: {
-            Text("Weather data by Open-Meteo.com. Only the chosen coordinates are sent; refreshed every 15 minutes.")
+            Text("Only the chosen coordinates are sent to Open-Meteo.com; refreshed every 15 minutes.")
         }
         Section("Location") {
             LabeledContent("Current", value: settings.location?.name ?? "Not set")
@@ -404,10 +826,7 @@ private struct ClockSection: View {
 
     var body: some View {
         Section {
-            Toggle("Show clock", isOn: $settings.enabled)
             PositionPicker(position: $settings.position)
-        }
-        Section {
             Picker("Format", selection: $settings.template) {
                 ForEach(Self.presets, id: \.1) { preset in
                     Text(preset.0).tag(preset.1)
@@ -420,6 +839,8 @@ private struct ClockSection: View {
                 .font(.system(.body, design: .monospaced))
             Toggle("Show seconds", isOn: $settings.seconds)
             LabeledContent("Preview", value: preview)
+        } header: {
+            Text("Display")
         } footer: {
             Text("Templates use Unicode date symbols (EEE = day, d = day of month, MMM = month, yyyy = year). Order follows your region settings.")
         }
@@ -432,11 +853,12 @@ private struct TmuxSection: View {
 
     var body: some View {
         Section {
-            Toggle("Enable tmux panes", isOn: $settings.enabled)
-            Toggle("Hide tmux status bar", isOn: $settings.hideStatusBar)
             LabeledContent("tmux", value: tmux.tmuxPath ?? "Not installed (brew install tmux)")
+            Toggle("Hide tmux's own status line", isOn: $settings.hideStatusBar)
+        } header: {
+            Text("General")
         } footer: {
-            Text("Open a profile by right-clicking a pane or from the Plugins menu (first profile: ⌥⌘T). Detach with Ctrl-b d or Detach Session in the pane menu; the session keeps running. Sessions survive a Ghostty crash and are reattached on restore; after a restart the resume command recreates them. Hiding the status bar applies only to sessions opened here.")
+            Text("Open a profile by right-clicking a pane or from the Plugins menu (first profile: ⌥⌘T). Detach with Ctrl-b d; the session keeps running. Hiding the status line applies only to sessions opened here.")
         }
 
         ForEach($settings.profiles) { $profile in
@@ -457,7 +879,7 @@ private struct TmuxSection: View {
                     }
                 }
             } header: {
-                Text(profile.name.isEmpty ? "Profile" : profile.name)
+                Text("Profile: " + (profile.name.isEmpty ? "Untitled" : profile.name))
             }
         }
 
@@ -495,56 +917,76 @@ private struct TmuxSection: View {
     }
 }
 
+/// Settings of an added plugin. Installed packages describe themselves; a plain
+/// executable is configured here.
 private struct CustomSection: View {
-    @Binding var plugins: [StatusLabPluginSettings.Custom]
+    @Binding var plugin: StatusLabPluginSettings.Custom
+    let others: [StatusLabPluginSettings.Custom]
+    let remove: () -> Void
+
+    private var duplicate: Bool { others.contains { $0.id == plugin.id } }
 
     var body: some View {
-        Section {
-            Text("Any executable that writes status protocol v1 to stdout can be added. Plugins run as normal processes with your permissions; only add programs you trust.")
-                .foregroundStyle(.secondary)
-        }
-        // Rows use a stable key: the identifier itself is editable.
-        ForEach($plugins, id: \.key) { plugin in
-            Section {
-                Toggle("Enabled", isOn: plugin.enabled)
-                TextField("Identifier", text: plugin.id)
+        if let package = plugin.package {
+            Section("Package") {
+                LabeledContent("Identifier") {
+                    Text(plugin.id).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                }
+                LabeledContent("Installed in") {
+                    HStack {
+                        Text((package as NSString).abbreviatingWithTildeInPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.secondary)
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: package)])
+                        }
+                    }
+                }
+            }
+        } else {
+            Section("Executable") {
+                TextField("Name", text: Binding(get: { plugin.name ?? "" }, set: { plugin.name = $0 }),
+                          prompt: Text(plugin.id))
+                TextField("Identifier", text: $plugin.id)
+                    .font(.system(.body, design: .monospaced))
                 HStack {
-                    TextField("Executable", text: plugin.executable, prompt: Text("/absolute/path/to/plugin"))
+                    TextField("Executable", text: $plugin.executable, prompt: Text("/absolute/path/to/plugin"))
                     Button("Choose…") {
                         let panel = NSOpenPanel()
                         panel.canChooseDirectories = false
-                        if panel.runModal() == .OK, let url = panel.url { plugin.wrappedValue.executable = url.path }
+                        if panel.runModal() == .OK, let url = panel.url { plugin.executable = url.path }
                     }
                 }
-                TextField("Arguments", text: Binding(
-                    get: { plugin.wrappedValue.arguments.joined(separator: " ") },
-                    // Keep empty parts while typing so a space can be entered; the
-                    // manifest drops them.
-                    set: { plugin.wrappedValue.arguments = $0.split(separator: " ", omittingEmptySubsequences: false)
-                        .map(String.init) }))
-                PositionPicker(position: plugin.position)
-                if !StatusLabPluginSettings.isValid(plugin.wrappedValue) ||
-                    plugins.filter({ $0.id == plugin.wrappedValue.id }).count > 1 {
-                    Text("Needs a unique identifier and an absolute executable path.")
+                if !StatusLabPluginSettings.isValid(plugin) || duplicate {
+                    Label("Needs a unique identifier and an absolute executable path.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
-                HStack {
-                    Spacer()
-                    Button("Remove", role: .destructive) {
-                        let key = plugin.wrappedValue.key
-                        plugins.removeAll { $0.key == key }
-                    }
-                }
-            } header: {
-                Text(plugin.wrappedValue.id.isEmpty ? "Plugin" : plugin.wrappedValue.id)
             }
         }
+
         Section {
-            Button("Add Plugin") {
-                plugins.append(.init(id: "plugin-" + String(UUID().uuidString.prefix(4)).lowercased(), executable: ""))
+            PositionPicker(position: $plugin.position)
+            TextField("Arguments", text: Binding(
+                get: { plugin.arguments.joined(separator: " ") },
+                // Keep empty parts while typing so a space can be entered; the manifest drops them.
+                set: { plugin.arguments = $0.split(separator: " ", omittingEmptySubsequences: false).map(String.init) }))
+                .font(.system(.body, design: .monospaced))
+        } header: {
+            Text("Display")
+        } footer: {
+            Text("Arguments are split on spaces; there is no shell expansion.")
+        }
+
+        Section {
+            HStack {
+                Spacer()
+                Button(plugin.package == nil ? "Remove Plugin" : "Uninstall Plugin", role: .destructive, action: remove)
             }
         } footer: {
-            Text("At most eight plugins run at the same time, built-in ones included. Arguments are split on spaces; no shell expansion.")
+            Text(plugin.package == nil
+                 ? "Removes the plugin from Ghostty when you press Apply. The executable itself is not deleted."
+                 : "Removes the plugin and its installed copy when you press Apply.")
         }
     }
 }

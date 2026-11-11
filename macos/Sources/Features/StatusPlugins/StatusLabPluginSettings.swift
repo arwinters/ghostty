@@ -61,18 +61,33 @@ struct StatusLabPluginSettings: Codable, Equatable {
         var profiles: [TmuxProfile] = [.claude]
     }
 
-    /// Third-party plugins: any executable that speaks the status protocol.
+    /// Added plugins: an installed plugin package, or any executable that speaks the
+    /// status protocol. The descriptive fields come from the package's plugin.json.
     struct Custom: Codable, Equatable, Identifiable {
         var id: String
         var executable: String
         var arguments: [String] = []
         var enabled = true
         var position = Position.leading
+        var name: String?
+        var summary: String?
+        var version: String?
+        var author: String?
+        var homepage: String?
+        /// The folder of an installed package (inside the app's plugin folder); nil for a
+        /// plain executable added by path.
+        var package: String?
         /// Stable row identity for the editor (the id itself is editable); not saved.
         var key = UUID()
 
         private enum CodingKeys: String, CodingKey {
-            case id, executable, arguments, enabled, position
+            case id, executable, arguments, enabled, position, name, version, author, homepage, package
+            case summary = "description"
+        }
+
+        var displayName: String {
+            let name = (name ?? "").trimmingCharacters(in: .whitespaces)
+            return name.isEmpty ? (id.isEmpty ? "Plugin" : id) : name
         }
     }
 
@@ -136,10 +151,137 @@ struct StatusLabPluginSettings: Codable, Equatable {
         return Manifest(plugins: Array(plugins.prefix(8)))
     }
 
+    /// Whether the plugin `id` falls outside the eight plugins the manifest keeps.
+    static func limitReached(draft settings: StatusLabPluginSettings, id: String) -> Bool {
+        let manifest = settings.manifest(helpers: URL(fileURLWithPath: "/"), interface: "en0", locale: "en")
+        let wanted = settings.custom.contains { $0.id == id && $0.enabled && isValid($0) } ||
+            (id == "system-stats" && settings.stats.enabled) || (id == "weather" && settings.weather.enabled) ||
+            (id == "clock" && settings.clock.enabled)
+        return wanted && !manifest.plugins.contains { $0.id == id }
+    }
+
     static func isValid(_ plugin: Custom) -> Bool {
         !plugin.id.isEmpty && plugin.id.count <= 64 && !builtInIDs.contains(plugin.id) &&
             plugin.executable.hasPrefix("/") && !plugin.executable.contains("\0") &&
             plugin.arguments.count <= 32 && plugin.arguments.allSatisfy { !$0.contains("\0") }
+    }
+}
+
+// MARK: Plugin packages
+
+/// A plugin as it is shared: a folder with a `plugin.json` and the executable it names.
+///
+///     {
+///       "id": "battery",
+///       "name": "Battery",
+///       "version": "1.0.0",
+///       "description": "Charge and charging state.",
+///       "author": "Your Name",
+///       "homepage": "https://github.com/you/ghostty-battery",
+///       "executable": "battery.sh",
+///       "arguments": [],
+///       "position": "trailing",
+///       "protocol": 1
+///     }
+///
+/// Installing copies the folder into the app's plugin folder, so the plugin keeps working
+/// when the download is moved or deleted.
+struct PluginPackage: Decodable, Equatable {
+    static let manifestName = "plugin.json"
+
+    var id: String
+    var name: String
+    var version: String
+    var description: String?
+    var author: String?
+    var homepage: String?
+    var executable: String
+    var arguments: [String]?
+    var position: StatusLabPluginSettings.Position?
+    var `protocol`: Int?
+
+    enum Failure: LocalizedError, Equatable {
+        case missingManifest
+        case unreadable(String)
+        case invalid(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .missingManifest: "The folder has no plugin.json. A plugin package is a folder with a plugin.json and an executable."
+            case .unreadable(let reason): "plugin.json could not be read: \(reason)"
+            case .invalid(let reason): reason
+            }
+        }
+    }
+
+    /// Reads and validates the package in `folder`.
+    static func load(_ folder: URL) throws -> PluginPackage {
+        let file = folder.appendingPathComponent(manifestName)
+        guard FileManager.default.fileExists(atPath: file.path) else { throw Failure.missingManifest }
+        let data: Data
+        let package: PluginPackage
+        do {
+            data = try Data(contentsOf: file)
+            guard data.count <= 64 * 1024 else { throw Failure.invalid("plugin.json is larger than 64 KiB.") }
+            package = try JSONDecoder().decode(Self.self, from: data)
+        } catch let failure as Failure {
+            throw failure
+        } catch DecodingError.keyNotFound(let key, _) {
+            throw Failure.unreadable("“\(key.stringValue)” is missing.")
+        } catch DecodingError.typeMismatch(_, let context) {
+            throw Failure.unreadable("“\(context.codingPath.map(\.stringValue).joined(separator: "."))” has the wrong type.")
+        } catch DecodingError.dataCorrupted(let context) where !context.codingPath.isEmpty {
+            throw Failure.unreadable("“\(context.codingPath.map(\.stringValue).joined(separator: "."))” has an invalid value.")
+        } catch {
+            throw Failure.unreadable("it is not valid JSON.")
+        }
+        try package.validate(in: folder)
+        return package
+    }
+
+    func validate(in folder: URL) throws {
+        func invalid(_ reason: String) -> Failure { .invalid(reason) }
+        guard id.range(of: "^[a-z0-9][a-z0-9._-]{0,63}$", options: .regularExpression) != nil else {
+            throw invalid("“id” must be 1–64 lowercase letters, digits, dots, dashes or underscores.")
+        }
+        guard !StatusLabPluginSettings.builtInIDs.contains(id) else {
+            throw invalid("“\(id)” is the id of a built-in plugin.")
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, name.count <= 64 else { throw invalid("“name” must be 1–64 characters.") }
+        guard !version.isEmpty, version.count <= 32 else { throw invalid("“version” must be 1–32 characters.") }
+        guard (description?.count ?? 0) <= 300 else { throw invalid("“description” is longer than 300 characters.") }
+        guard (author?.count ?? 0) <= 64 else { throw invalid("“author” is longer than 64 characters.") }
+        if let homepage {
+            guard let url = URL(string: homepage), url.scheme == "https", url.host != nil else {
+                throw invalid("“homepage” must be an https link.")
+            }
+        }
+        if let version = `protocol`, version != 1 {
+            throw invalid("The plugin needs status protocol \(version); this version of Ghostty supports protocol 1.")
+        }
+        let arguments = arguments ?? []
+        guard arguments.count <= 32, arguments.allSatisfy({ !$0.contains("\0") }) else {
+            throw invalid("“arguments” may have at most 32 entries.")
+        }
+        guard !executable.isEmpty, !executable.hasPrefix("/"), !executable.contains("\0"),
+              !executable.split(separator: "/").contains("..") else {
+            throw invalid("“executable” must be a path inside the package folder.")
+        }
+        // A symbolic link must not lead out of the package.
+        let root = folder.resolvingSymlinksInPath().path + "/"
+        let path = folder.appendingPathComponent(executable).resolvingSymlinksInPath().path
+        guard path.hasPrefix(root) else { throw invalid("“executable” must be a path inside the package folder.") }
+        guard FileManager.default.isExecutableFile(atPath: path) else {
+            throw invalid("“\(executable)” is missing or not executable (chmod +x).")
+        }
+    }
+
+    /// The plugin entry for a package installed in `folder`.
+    func plugin(installedAt folder: URL) -> StatusLabPluginSettings.Custom {
+        .init(id: id, executable: folder.appendingPathComponent(executable).path, arguments: arguments ?? [],
+              enabled: true, position: position ?? .leading, name: name, summary: description,
+              version: version, author: author, homepage: homepage, package: folder.path)
     }
 }
 

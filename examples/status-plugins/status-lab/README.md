@@ -37,8 +37,9 @@ differently, if any of it is ever considered for Ghostty itself.
 | Status bar plugins | A bar below the splits, outside the terminal grid. Plugins are separate processes that write small JSON snapshots; they never touch terminal input or output. | Bottom of every window |
 | System Stats | CPU with one block per core (performance cores blue, efficiency cores teal), memory, network down/up, disk space, disk read/write. Compact block graphs or line graphs. Local only. | Bundled plugin |
 | Weather, Clock | Current weather from Open-Meteo (no API key, only your chosen coordinates are sent) and a locale-aware day/date/year/time. | Bundled plugins |
-| Plugin Manager | Turn plugins on or off, place each one left, right or far right, edit their settings, add any third-party executable that speaks the protocol. | Plugins menu, ⌥⌘P, or the Plugins button in the bar |
-| Session Manager | Saves windows, tabs, splits, ratios, focused pane, directories, titles, font size and the last 128K characters of output every 5 seconds, before sleep and when quitting. Restores them at launch, also after a crash. Named workspaces can be saved and restored. | Sessions menu, ⇧⌘S, or the Sessions button |
+| Plugin Manager | Every plugin, built-in or installed, with its version and whether it is running. Turn plugins on or off, place each one left, right or far right, edit their settings, install plugin packages or add any executable that speaks the protocol. | Plugins menu, ⌥⌘P, or the Plugins button in the bar |
+| Session Manager | The open windows always belong to a workspace that saves itself: windows, tabs, splits, ratios, focused pane, directories, titles, font size and recent output. Layout changes are saved within seconds, the visible screen at most once a minute, scrollback before sleep and when quitting. Restores the last workspace at launch, also after a crash. Switch workspaces, open earlier versions, delete several at once. | Sessions menu, ⇧⌘S, or the workspace name in the bar |
+| Context menu | Right-click a pane (also inside tmux): copy and paste, tabs and splits, the pane's directory, tmux, workspaces and terminal actions. | Right-click a pane |
 | tmux panes | Profiles (default: Claude, `claude`) open a tmux session in a directory you choose, as a split or tab. Detached sessions can be reattached. After a crash the session is still running and is reattached; after a restart it is recreated with a resume command (`claude --continue`). tmux's own status line is hidden for these sessions only. | Right-click a pane › tmux |
 | Restart Terminal | Stops every process attached to the pane's terminal and starts a new shell in the same place, directory and font size. | Right-click a stuck pane › Restart Terminal… |
 | Tab strip | Compact tabs for `macos-titlebar-style = tabs` that keep a sensible width and blend with the background. In fullscreen the tabs are hidden and appear with the menu bar when you move the pointer to the top. | Top of the window |
@@ -102,7 +103,11 @@ like any Ghostty configuration.
 
 - macOS only. Linux (GTK) has none of this.
 - Plugins run with your permissions and are not sandboxed. Only add programs you trust.
-- Each window runs its own set of plugin processes.
+- Plugin packages are installed from a folder; there is no catalog, download or update
+  check. A downloaded binary may be blocked by Gatekeeper until you allow it in System
+  Settings › Privacy & Security; scripts are not affected.
+- Workspaces open in place of the open windows; programs in normal panes stop (tmux
+  sessions keep running).
 - Normal panes restore as new shells with saved output; the programs themselves do not
   come back. Repeated restores currently repeat the "Restored session" marker in the
   saved output.
@@ -110,6 +115,14 @@ like any Ghostty configuration.
   keybindings.
 - Ad-hoc signed: it runs on the Mac that built it. Distribution would need a
   Developer ID and notarization.
+
+## Write and share a plugin
+
+A plugin is any executable that writes the status protocol to stdout. To share one,
+put it in a folder with a `plugin.json` (name, version, description, author, homepage)
+and publish the folder, for example as a GitHub repository. Users install it with
+**Install Plugin…** in the Plugin Manager. See [Plugin packages](../README.md#plugin-packages)
+and the example in [`../packages/battery`](../packages/battery).
 
 ## Versions
 

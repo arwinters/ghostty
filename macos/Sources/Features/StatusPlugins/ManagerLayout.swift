@@ -6,6 +6,9 @@ struct ManagerLayoutRow {
     let title: String
     let symbol: String
     var badge: String?
+    /// Consecutive rows with the same group share a sidebar section with this title.
+    var group: String?
+    var badgeColor: Color?
 }
 
 /// Shared look of the Plugin Manager and Session Manager windows: a sidebar, a grouped form
@@ -21,21 +24,12 @@ struct ManagerLayout<Page: Hashable & Identifiable, Detail: View, Footer: View>:
     var body: some View {
         HStack(spacing: 0) {
             List(selection: Binding<Page?>(get: { selection }, set: { if let value = $0 { selection = value } })) {
-                ForEach(pages) { page in
-                    let info = row(page)
-                    HStack {
-                        Label(info.title, systemImage: info.symbol)
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        if let badge = info.badge {
-                            Text(badge)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                    if let title = group.title {
+                        Section(title) { rows(group.pages) }
+                    } else {
+                        rows(group.pages)
                     }
-                    .padding(.vertical, 2)
-                    .tag(page)
                 }
             }
             .listStyle(.sidebar)
@@ -54,6 +48,38 @@ struct ManagerLayout<Page: Hashable & Identifiable, Detail: View, Footer: View>:
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+    }
+
+    private var groups: [(title: String?, pages: [Page])] {
+        var result: [(title: String?, pages: [Page])] = []
+        for page in pages {
+            let title = row(page).group
+            if let last = result.last, last.title == title {
+                result[result.count - 1].pages.append(page)
+            } else {
+                result.append((title, [page]))
+            }
+        }
+        return result
+    }
+
+    private func rows(_ pages: [Page]) -> some View {
+        ForEach(pages) { page in
+            let info = row(page)
+            HStack {
+                Label(info.title, systemImage: info.symbol)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let badge = info.badge {
+                    Text(badge)
+                        .font(.caption)
+                        .foregroundStyle(info.badgeColor ?? .secondary)
+                        .monospacedDigit()
+                }
+            }
+            .padding(.vertical, 2)
+            .tag(page)
+        }
     }
 }
 

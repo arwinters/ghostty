@@ -117,6 +117,87 @@ struct StatusLabPluginTests {
 
     // MARK: tmux
 
+    /// A package folder with a plugin.json and an executable script.
+    func package(_ json: [String: Any], script: String? = "#!/bin/sh\n") throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: json).write(to: folder.appendingPathComponent("plugin.json"))
+        if let script {
+            let file = folder.appendingPathComponent("run.sh")
+            try script.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        return folder
+    }
+
+    let validPackage: [String: Any] = ["id": "battery", "name": "Battery", "version": "1.0.0",
+                                       "description": "Charge", "author": "Me", "executable": "run.sh",
+                                       "position": "trailing", "protocol": 1,
+                                       "homepage": "https://example.com/battery"]
+
+    @Test func pluginPackagesLoadIntoPluginEntries() throws {
+        let folder = try package(validPackage)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let plugin = try PluginPackage.load(folder).plugin(installedAt: folder)
+        #expect(plugin.id == "battery")
+        #expect(plugin.displayName == "Battery")
+        #expect(plugin.executable == folder.appendingPathComponent("run.sh").path)
+        #expect(plugin.position == .trailing)
+        #expect(plugin.package == folder.path)
+        #expect(StatusLabPluginSettings.isValid(plugin))
+        // The descriptive fields survive saving and loading the settings.
+        var settings = StatusLabPluginSettings()
+        settings.custom = [plugin]
+        let decoded = try JSONDecoder().decode(StatusLabPluginSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.custom.first?.summary == "Charge")
+        #expect(decoded.custom.first?.package == folder.path)
+    }
+
+    @Test func pluginPackagesAreValidated() throws {
+        func failure(_ change: [String: Any], script: String? = "#!/bin/sh\n") throws -> PluginPackage.Failure? {
+            let folder = try package(validPackage.merging(change) { $1 }, script: script)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            do { _ = try PluginPackage.load(folder); return nil } catch let error as PluginPackage.Failure { return error }
+        }
+        #expect(try failure([:]) == nil)
+        #expect(try failure(["id": "Bad Id"]) != nil)
+        #expect(try failure(["id": "clock"]) != nil)
+        #expect(try failure(["executable": "../run.sh"]) != nil)
+        #expect(try failure(["executable": "/bin/sh"]) != nil)
+        #expect(try failure(["executable": "missing.sh"]) != nil)
+        #expect(try failure(["protocol": 2]) != nil)
+        #expect(try failure(["homepage": "http://example.com"]) != nil)
+        #expect(try failure(["position": "middle"]) != nil)
+        #expect(try failure([:], script: nil) != nil)
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+        #expect(throws: PluginPackage.Failure.missingManifest) { try PluginPackage.load(empty) }
+    }
+
+    @Test func executablesOutsideThePackageAreRejectedThroughLinks() throws {
+        let folder = try package(validPackage.merging(["executable": "link"]) { $1 }, script: nil)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("link"),
+                                                   withDestinationURL: URL(fileURLWithPath: "/bin/sh"))
+        #expect(throws: PluginPackage.Failure.self) { try PluginPackage.load(folder) }
+    }
+
+    @Test func bundledExamplePackageIsValid() throws {
+        let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../examples/status-plugins/packages/battery").standardizedFileURL
+        let package = try PluginPackage.load(folder)
+        #expect(package.id == "battery")
+    }
+
+    @Test func pluginLimitIsReported() {
+        var settings = StatusLabPluginSettings()
+        settings.custom = (1...7).map { .init(id: "p\($0)", executable: "/bin/p\($0)") }
+        #expect(!StatusLabPluginSettings.limitReached(draft: settings, id: "p5"))
+        #expect(StatusLabPluginSettings.limitReached(draft: settings, id: "p6"))
+        #expect(!StatusLabPluginSettings.limitReached(draft: settings, id: "unknown"))
+    }
+
     @Test func tmuxSessionNamesAreSafe() {
         let name = TmuxCommand.newSessionName(profile: "My Claude!")
         #expect(name.hasPrefix("ghostty-my-claude--"))
