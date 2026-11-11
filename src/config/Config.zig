@@ -1108,6 +1108,9 @@ palette: Palette = .{},
 ///   * `command` - what runs in the session, through your login shell (required).
 ///   * `resume` - what runs instead when a saved session is restored after the
 ///     tmux session has ended, for example after a restart. Defaults to `command`.
+///   * `install` - how to install the tool when it is missing, shown as an
+///     Install button with live progress. Claude Code, Codex, Gemini CLI and
+///     Aider install with Homebrew by default.
 ///
 /// Example:
 ///

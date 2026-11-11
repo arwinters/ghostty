@@ -224,6 +224,36 @@ struct StatusLabPluginTests {
         #expect(TmuxCommand.isValidSessionName(name))
     }
 
+    @Test func toolsInstallWithHomebrew() throws {
+        // A configured install command wins; known tools have a Homebrew default.
+        let custom = try AISession.parse("name:X,command:x --flag,install:brew install --formula x-cli").get()
+        #expect(custom.installCommand == "brew install --formula x-cli")
+        #expect(try AISession.parse("name:Codex,command:codex").get().installCommand == "brew install --cask codex")
+        #expect(try AISession.parse("name:Mine,command:mytool").get().installCommand == nil)
+
+        #expect(BrewRequest.parse("brew install --cask codex") == BrewRequest(name: "codex", cask: true))
+        #expect(BrewRequest.parse("/opt/homebrew/bin/brew install aider") == BrewRequest(name: "aider", cask: false))
+        #expect(BrewRequest.parse("brew install a b") == nil)
+        #expect(BrewRequest.parse("brew install --HEAD x") == nil)
+        #expect(BrewRequest.parse("npm install -g @openai/codex") == nil)
+        #expect(BrewRequest.parse("brew install x; rm -rf ~") == nil)
+    }
+
+    @Test func homebrewOutputMovesThroughTheSteps() {
+        typealias I = ToolInstaller
+        #expect(I.classify("==> Auto-updating Homebrew...").step == .prepare)
+        #expect(I.classify("==> Fetching downloads for: codex").step == .download)
+        #expect(I.classify("✔︎ Cask codex (0.167.1)").step == .install)
+        #expect(I.classify("==> Installing Cask codex").step == .install)
+        let link = I.classify("==> Linking Binary 'codex' to '/opt/homebrew/bin/codex'")
+        #expect(link.step == .link)
+        #expect(link.linked == "/opt/homebrew/bin/codex")
+        #expect(I.classify("🍺  codex was successfully installed!").step == .finish)
+        #expect(I.classify("Error: Cask 'nope' is unavailable").kind == .error)
+        #expect(I.classify("Warning: something").kind == .warning)
+        #expect(I.clean("\u{1B}[34m==>\u{1B}[0m \u{1B}[1mFetching codex\u{1B}[0m\u{08}") == "==> Fetching codex")
+    }
+
     @Test func tmuxSessionNamesAreSafe() {
         let name = TmuxCommand.newSessionName(profile: "My Claude!")
         #expect(name.hasPrefix("ghostty-my-claude--"))

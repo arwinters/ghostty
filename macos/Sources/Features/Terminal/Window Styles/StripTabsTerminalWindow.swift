@@ -309,6 +309,32 @@ final class TerminalTabStripModel: ObservableObject {
     func newTab() {
         (window?.windowController as? TerminalController)?.newTab(nil)
     }
+
+    func move(_ id: ObjectIdentifier, by amount: Int) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        move(id, to: index + amount)
+    }
+
+    /// Moves a tab to `index` in its window's tab group; the selected tab stays selected.
+    func move(_ id: ObjectIdentifier, to index: Int) {
+        guard let window, let group = window.tabGroup, let moving = window.tabWindow(id) else { return }
+        let windows = group.windows
+        guard let from = windows.firstIndex(of: moving) else { return }
+        let target = min(max(index, 0), windows.count - 1)
+        guard target != from else { return }
+        let anchor = windows[target]
+        let selected = group.selectedWindow
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        group.removeWindow(moving)
+        anchor.addTabbedWindowSafely(moving, ordered: target < from ? .below : .above)
+        if let selected {
+            group.selectedWindow = selected
+            selected.makeKey()
+        }
+        NSAnimationContext.endGrouping()
+        StripTabsTerminalWindow.tabStripChanged()
+    }
 }
 
 private struct TerminalTabStripKey: EnvironmentKey {

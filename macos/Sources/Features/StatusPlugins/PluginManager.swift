@@ -1062,6 +1062,10 @@ private struct AISection: View {
                     }
                     Spacer()
                     StateLabel(state: state(session))
+                    if ai.installed[session.executable] == false, let install = session.installCommand {
+                        Button("Install…") { ToolInstallWindow.show(session) }
+                            .help("Runs “\(install)” and shows its progress")
+                    }
                 }
             }
             ForEach(ai.errors, id: \.self) { error in
@@ -1090,7 +1094,7 @@ private struct AISection: View {
         } header: {
             Text("Configuration")
         } footer: {
-            Text("One macos-ai-session line per tool: name is the menu title, command what runs, resume what runs when a saved session comes back after a restart (optional). Quote a value that contains a comma. Reload the configuration after editing.")
+            Text("One macos-ai-session line per tool: name is the menu title, command what runs, resume what runs when a saved session comes back after a restart, install how to install it when it is missing (both optional; Claude Code, Codex, Gemini CLI and Aider install with Homebrew by default). Quote a value that contains a comma. Reload the configuration after editing.")
         }
         .onAppear { ai.reload() }
     }

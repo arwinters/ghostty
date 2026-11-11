@@ -1,5 +1,17 @@
 # Status Lab changelog
 
+## 0.9.3 — 2026-11-11
+
+- Tabs in the tab strip can be dragged to a new position; the tabs they pass make room.
+  Move Tab Left and Move Tab Right are in the tab's menu.
+- A missing AI tool installs from the menu (Install Codex…) or the Plugin Manager. The
+  install window shows what Homebrew will install (version, description, website,
+  download size, where it is linked), then the steps Prepare › Download › Install ›
+  Link › Ready with a measured download (size, percentage, speed) and Homebrew's own
+  output. Afterwards the tool opens straight away.
+- `macos-ai-session` takes an optional `install:` command; Claude Code, Codex, Gemini CLI
+  and Aider install with Homebrew by default.
+
 ## 0.9.2 — 2026-11-11
 
 - AI sessions: right-click a pane › New AI Session › Claude Code, Codex or any configured

@@ -12,6 +12,10 @@ struct TerminalTabStrip: View {
 
     private let spacing: CGFloat = 4
     private let newTabWidth: CGFloat = 28
+    /// The tab being dragged to a new position, and how far.
+    @State private var dragging: ObjectIdentifier?
+    @State private var dragOffset: CGFloat = 0
+    @State private var dropIndex: Int?
 
     var body: some View {
         if model.visible || ignoresVisibility { strip }
@@ -19,10 +23,15 @@ struct TerminalTabStrip: View {
 
     private var strip: some View {
         GeometryReader { geometry in
+            let width = tabWidth(available: geometry.size.width)
             HStack(spacing: spacing) {
                 ForEach(model.tabs) { tab in
                     TabItem(model: model, tab: tab, closable: model.tabs.count > 1)
-                        .frame(width: tabWidth(available: geometry.size.width))
+                        .frame(width: width)
+                        .offset(x: offset(of: tab, step: width + spacing))
+                        .zIndex(dragging == tab.id ? 1 : 0)
+                        .shadow(color: .black.opacity(dragging == tab.id ? 0.35 : 0), radius: 6)
+                        .gesture(reorder(tab, step: width + spacing))
                 }
                 NewTabButton { model.newTab() }
                     .frame(width: newTabWidth)
@@ -36,6 +45,45 @@ struct TerminalTabStrip: View {
         .background(background)
         .opacity(model.isKey ? 1 : 0.65)
         .animation(.easeOut(duration: 0.12), value: model.tabs)
+        .animation(.easeOut(duration: 0.12), value: dropIndex)
+    }
+
+    // MARK: Reordering
+
+    /// Dragging a tab sideways moves it; the tabs it passes make room while dragging.
+    private func reorder(_ tab: TerminalTabStripModel.Tab, step: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard model.tabs.count > 1 else { return }
+                dragging = tab.id
+                dragOffset = value.translation.width
+                let target = targetIndex(step: step)
+                if target != dropIndex { dropIndex = target }
+            }
+            .onEnded { _ in
+                let target = dropIndex
+                dragging = nil
+                dragOffset = 0
+                dropIndex = nil
+                if let target { model.move(tab.id, to: target) }
+            }
+    }
+
+    private var draggedIndex: Int? { dragging.flatMap { id in model.tabs.firstIndex { $0.id == id } } }
+
+    private func targetIndex(step: CGFloat) -> Int? {
+        guard let from = draggedIndex, step > 0 else { return nil }
+        let moved = Int((dragOffset / step).rounded())
+        return min(max(from + moved, 0), model.tabs.count - 1)
+    }
+
+    private func offset(of tab: TerminalTabStripModel.Tab, step: CGFloat) -> CGFloat {
+        if tab.id == dragging { return dragOffset }
+        guard let from = draggedIndex, let target = dropIndex,
+              let index = model.tabs.firstIndex(where: { $0.id == tab.id }) else { return 0 }
+        if from < target, index > from, index <= target { return -step }
+        if target < from, index >= target, index < from { return step }
+        return 0
     }
 
     private func tabWidth(available: CGFloat) -> CGFloat {
@@ -119,6 +167,11 @@ struct TerminalTabStrip: View {
                     Button(color.localizedName) { model.setColor(color, for: tab.id) }
                 }
             }
+            Divider()
+            Button("Move Tab Left") { model.move(tab.id, by: -1) }
+                .disabled(model.tabs.first?.id == tab.id)
+            Button("Move Tab Right") { model.move(tab.id, by: 1) }
+                .disabled(model.tabs.last?.id == tab.id)
             Divider()
             Button("Close Tab") { model.close(tab.id) }
             Button("Close Other Tabs") { model.closeOthers(tab.id) }

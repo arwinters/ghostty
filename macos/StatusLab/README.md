@@ -17,10 +17,10 @@ conversation about which of these ideas could fit Ghostty.
 | **Plugin Manager** | Every plugin, built-in or installed, with its version and whether it runs. Turn plugins on or off, place them left or right, install plugin packages. ⌥⌘P |
 | **Workspaces** | Your windows, tabs, splits, directories and recent output always belong to a workspace that saves itself. Reopens at launch, also after a crash. Switch workspaces, open earlier versions. ⇧⌘S |
 | **tmux panes** | Sessions that keep running when Ghostty quits or crashes, can be attached from any terminal, and come back with their history after a restart. |
-| **AI sessions** | Right-click a pane › New AI Session › Claude Code, Codex or any tool you configure, in that pane's directory, in a tmux session. |
+| **AI sessions** | Right-click a pane › New AI Session › Claude Code, Codex or any tool you configure, in that pane's directory, in a tmux session. A missing tool installs with Homebrew from the menu, with live progress. |
 | **Context menu** | Right-click (also inside tmux): copy and paste, splits and tabs, the pane's directory, tmux, AI sessions, workspaces. |
 | **Restart Terminal** | Revive a hung pane without closing the window: stops everything on its terminal and starts a fresh shell in the same place. |
-| **Tab strip** | Compact tabs that blend with the background; hidden with the menu bar in fullscreen. |
+| **Tab strip** | Compact tabs that blend with the background; drag to reorder; hidden with the menu bar in fullscreen. |
 
 ## Install
 
@@ -47,9 +47,11 @@ with ⇧⌘, .
 Status Lab adds one option:
 
 ```ini
-# AI tools in the right-click menu: name, command, and what runs after a restart.
+# AI tools in the right-click menu: name, command, what runs after a restart, and
+# (optional) how to install it when it is missing.
 macos-ai-session = name:Claude Code,command:claude,resume:claude --continue
 macos-ai-session = name:Codex,command:codex,resume:codex resume --last
+macos-ai-session = name:Gemini,command:gemini,install:brew install gemini-cli
 ```
 
 Plugin choices are made in the Plugin Manager; it writes the plugin manifest that the
@@ -76,7 +78,6 @@ app passes to Ghostty's `macos-status-plugins` option. tmux profiles live there 
 - macOS only.
 - Plugins run with your permissions and are not sandboxed; install only plugins you trust.
 - Programs in normal panes do not survive a restart; use a tmux pane for those.
-- Tabs in the tab strip cannot be dragged.
 - Ad-hoc signed: runs on the Mac that built it. Distribution needs a Developer ID.
 
 ## About

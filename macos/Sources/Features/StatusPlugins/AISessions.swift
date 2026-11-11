@@ -8,6 +8,18 @@ struct AISession: Equatable, Identifiable {
     var command: String
     /// What runs when a saved session is restored after its tmux session ended.
     var resume: String
+    /// How to install the tool when it is missing; see `installCommand`.
+    var install: String?
+
+    /// The configured install command, or a Homebrew command for well-known tools.
+    var installCommand: String? { install ?? Self.knownInstalls[executable] }
+
+    static let knownInstalls = [
+        "claude": "brew install --cask claude-code",
+        "codex": "brew install --cask codex",
+        "gemini": "brew install gemini-cli",
+        "aider": "brew install aider",
+    ]
 
     /// Also the profile id, so tmux session names read `ghostty-claude-code-ab12`.
     var id: String {
@@ -29,7 +41,7 @@ struct AISession: Equatable, Identifiable {
         var description: String {
             switch self {
             case .missing(let key): "“\(key)” is missing"
-            case .unknownKey(let key): "unknown key “\(key)” (use name, command and resume)"
+            case .unknownKey(let key): "unknown key “\(key)” (use name, command, resume and install)"
             case .malformed: "expected key:value pairs separated by commas"
             }
         }
@@ -43,13 +55,14 @@ struct AISession: Equatable, Identifiable {
             guard let colon = part.firstIndex(of: ":") else { return .failure(.malformed) }
             let key = part[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
             let raw = part[part.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            guard ["name", "command", "resume"].contains(key) else { return .failure(.unknownKey(key)) }
+            guard ["name", "command", "resume", "install"].contains(key) else { return .failure(.unknownKey(key)) }
             fields[key] = unquote(raw)
         }
         guard let name = fields["name"], !name.isEmpty else { return .failure(.missing("name")) }
         guard let command = fields["command"], !command.isEmpty else { return .failure(.missing("command")) }
         let resume = fields["resume"].flatMap { $0.isEmpty ? nil : $0 } ?? command
-        return .success(.init(name: name, command: command, resume: resume))
+        let install = fields["install"].flatMap { $0.isEmpty ? nil : $0 }
+        return .success(.init(name: name, command: command, resume: resume, install: install))
     }
 
     /// Every valid entry, and a message per invalid one. Later entries with the same name
@@ -206,10 +219,21 @@ final class AISessions: NSObject, ObservableObject, NSMenuDelegate {
     /// One tool with a submenu of placements; disabled when it is not installed.
     func item(for session: AISession, source: Ghostty.SurfaceView?, directory: String?) -> NSMenuItem {
         let available = installed[session.executable] != false
-        let item = NSMenuItem(title: available ? session.name : "\(session.name) — not installed", action: nil, keyEquivalent: "")
-        item.isEnabled = available
-        item.toolTip = available ? session.command : "“\(session.executable)” was not found in your login shell."
-        guard available else { return item }
+        guard available else {
+            // Missing: offer the installer when there is a way to install it.
+            let canInstall = session.installCommand != nil
+            let item = NSMenuItem(title: canInstall ? "Install \(session.name)…" : "\(session.name) — not installed",
+                                  action: canInstall ? #selector(install(_:)) : nil, keyEquivalent: "")
+            item.target = self
+            item.representedObject = session.id
+            item.isEnabled = canInstall
+            item.toolTip = "“\(session.executable)” was not found in your login shell." +
+                (session.installCommand.map { " Installs with: \($0)" } ?? "")
+            item.setImageIfDesired(systemSymbolName: "arrow.down.circle")
+            return item
+        }
+        let item = NSMenuItem(title: session.name, action: nil, keyEquivalent: "")
+        item.toolTip = session.command
         let submenu = NSMenu()
         for placement in [TmuxPlugin.Placement.splitRight, .splitDown, .tab] {
             let action = submenu.addItem(withTitle: placement.shortTitle, action: #selector(choose(_:)), keyEquivalent: "")
@@ -259,4 +283,16 @@ final class AISessions: NSObject, ObservableObject, NSMenuDelegate {
     }
 
     @objc private func showSettings() { PluginManager.shared.showManager(page: .ai) }
+
+    @objc private func install(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let session = sessions.first(where: { $0.id == id }) else { return }
+        ToolInstallWindow.show(session)
+    }
+
+    /// Called by the installer: the tool may be on PATH now.
+    func installed(_ session: AISession) {
+        installed[session.executable] = nil
+        reload()
+    }
 }
