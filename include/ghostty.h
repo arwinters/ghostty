@@ -566,6 +566,12 @@ typedef struct {
   size_t len;
 } ghostty_config_color_list_s;
 
+// config.RepeatableCString
+typedef struct {
+  const char* GHOSTTY_NULL_UNSPECIFIED const* GHOSTTY_NULL_UNSPECIFIED strings;
+  size_t len;
+} ghostty_config_string_list_s;
+
 // config.RepeatableCommand
 typedef struct {
   const ghostty_command_s* GHOSTTY_NULL_UNSPECIFIED commands;

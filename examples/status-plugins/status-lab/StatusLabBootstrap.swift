@@ -5,6 +5,17 @@ import Foundation
 /// Ghostty build. Gives the app its own configuration, generates the plugin manifest, and
 /// seeds the defaults on first launch so it can run beside an installed Ghostty.
 enum StatusLabBootstrap {
+    static let aiSessions = """
+
+    # AI sessions in the right-click menu (New AI Session). One line per tool:
+    #   name:<title in the menu>,command:<what runs>,resume:<what runs after a restart>
+    # Each opens in a tmux session in the pane's directory. Remove a line to drop a tool;
+    # "macos-ai-session =" on its own removes all of them.
+    macos-ai-session = name:Claude Code,command:claude,resume:claude --continue
+    macos-ai-session = name:Codex,command:codex,resume:codex resume --last
+
+    """
+
     static func prepare() -> String {
         do {
             let manager = FileManager.default
@@ -32,6 +43,12 @@ enum StatusLabBootstrap {
             if !UserDefaults.standard.bool(forKey: saveStateKey) {
                 contents = contents.replacingOccurrences(of: "window-save-state = never", with: "window-save-state = always")
                 UserDefaults.standard.set(true, forKey: saveStateKey)
+            }
+            // Once: offer the AI sessions of 0.9.2 to existing configurations as well.
+            let aiKey = "StatusLabMigratedAISessions"
+            if !UserDefaults.standard.bool(forKey: aiKey) {
+                if !contents.contains("macos-ai-session") { contents += Self.aiSessions }
+                UserDefaults.standard.set(true, forKey: aiKey)
             }
             let migrated = contents.components(separatedBy: "\n").filter {
                 !["title = Ghostty Status Lab", "title = Ghostty Dev Version"].contains(

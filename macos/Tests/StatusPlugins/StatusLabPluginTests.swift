@@ -198,6 +198,32 @@ struct StatusLabPluginTests {
         #expect(!StatusLabPluginSettings.limitReached(draft: settings, id: "unknown"))
     }
 
+    @Test func aiSessionsParseFromTheConfiguration() throws {
+        let claude = try AISession.parse("name:Claude Code,command:claude,resume:claude --continue").get()
+        #expect(claude == AISession(name: "Claude Code", command: "claude", resume: "claude --continue"))
+        #expect(claude.id == "claude-code")
+        #expect(claude.executable == "claude")
+        // resume defaults to command; spaces around keys and values are ignored.
+        let codex = try AISession.parse(" name : Codex , command : codex --model x ").get()
+        #expect(codex.resume == "codex --model x")
+        #expect(codex.executable == "codex")
+        // Quoted values may contain commas and escaped quotes.
+        let quoted = try AISession.parse(#"name:"Ask, then run",command:"aider --message \"hi, there\"""#).get()
+        #expect(quoted.name == "Ask, then run")
+        #expect(quoted.command == #"aider --message "hi, there""#)
+        #expect(AISession.parse("command:claude") == .failure(.missing("name")))
+        #expect(AISession.parse("name:X") == .failure(.missing("command")))
+        #expect(AISession.parse("name:X,command:x,model:y") == .failure(.unknownKey("model")))
+        #expect(AISession.parse("just text") == .failure(.malformed))
+        // Later lines with the same name replace earlier ones; errors are reported, not fatal.
+        let all = AISession.parseAll(["name:Claude,command:a", "bad", "name:Claude,command:b"])
+        #expect(all.sessions.map(\.command) == ["b"])
+        #expect(all.errors.count == 1)
+        // The tmux session name stays valid for any title.
+        let name = TmuxCommand.newSessionName(profile: try AISession.parse("name:Ünïcode Tool!,command:x").get().id)
+        #expect(TmuxCommand.isValidSessionName(name))
+    }
+
     @Test func tmuxSessionNamesAreSafe() {
         let name = TmuxCommand.newSessionName(profile: "My Claude!")
         #expect(name.hasPrefix("ghostty-my-claude--"))

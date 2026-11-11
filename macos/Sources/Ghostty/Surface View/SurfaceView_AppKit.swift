@@ -1590,6 +1590,12 @@ extension Ghostty {
             self.showDefinition(for: str, at: pt)
         }
 
+        override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+            super.willOpenMenu(menu, with: event)
+            // Status Lab: see SurfaceContextMenu.swift.
+            pruneContextMenu(menu)
+        }
+
         override func menu(for event: NSEvent) -> NSMenu? {
             // We only support right-click menus
             switch event.type {

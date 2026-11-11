@@ -10,6 +10,9 @@ extension Ghostty.SurfaceView {
     func statusLabContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.identifier = Self.contextMenuIdentifier
+        // No Services entries (for example from GPG tools); they do not apply to a terminal.
+        menu.allowsContextMenuPlugIns = false
 
         @discardableResult
         func add(_ title: String, _ action: Selector, symbol: String? = nil, target: AnyObject? = nil,
@@ -72,10 +75,12 @@ extension Ghostty.SurfaceView {
             add("Copy Path", #selector(contextCopyDirectory(_:)), symbol: "link")
         }
 
-        // Status Lab: tmux profiles and detached sessions, opened next to this pane.
+        // Status Lab: AI tools, tmux profiles and detached sessions, opened next to this pane.
+        let ai = PluginManager.enabled ? AISessions.shared.contextMenuItem(for: self, directory: contextDirectory) : nil
         let tmux = TmuxPlugin.shared.contextMenuItem(for: self)
         let sessions = SessionManager.shared.enabled
-        if tmux != nil || sessions { menu.addItem(.separator()) }
+        if ai != nil || tmux != nil || sessions { menu.addItem(.separator()) }
+        if let ai { menu.addItem(ai) }
         if let tmux { menu.addItem(tmux) }
         if sessions {
             let submenu = NSMenu()
@@ -107,11 +112,24 @@ extension Ghostty.SurfaceView {
         tabTitle.setImageIfDesired(systemSymbolName: "pencil.line")
         add("Change Terminal Title…", #selector(changeTitle(_:)))
 
+        // Items AppKit adds later (AutoFill) are removed in willOpenMenu.
+        for item in menu.items { item.tag = Self.contextMenuTag }
         return menu
     }
 
+    static let contextMenuIdentifier = NSUserInterfaceItemIdentifier("StatusLabSurfaceContextMenu")
+    static let contextMenuTag = 0x5354_4C42
+
+    /// Removes what AppKit added to the pane menu after it was built, such as AutoFill:
+    /// filling in passwords or contacts does not apply to a terminal.
+    func pruneContextMenu(_ menu: NSMenu) {
+        guard menu.identifier == Self.contextMenuIdentifier else { return }
+        for item in menu.items.reversed() where item.tag != Self.contextMenuTag { menu.removeItem(item) }
+        while let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
+    }
+
     /// The pane's directory; tmux panes report theirs through tmux.
-    private var contextDirectory: String? {
+    var contextDirectory: String? {
         let directory = TmuxPlugin.shared.path(for: id) ?? pwd
         guard let directory, directory.hasPrefix("/") else { return nil }
         return directory

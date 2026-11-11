@@ -247,6 +247,30 @@ Claude: `claude --continue`, or a login shell when Claude had already exited). W
 command exits, the pane keeps a login shell. Closing a pane detaches it; end sessions
 from the Plugin Manager.
 
+## AI sessions (Status Lab builds)
+
+Right-click a pane › **New AI Session** starts an AI coding tool in a tmux session in that
+pane's directory, as a split or a new tab (also in the Plugins menu, starting in the
+focused pane's directory). Because it runs in tmux, it keeps running when Ghostty quits
+and can be attached from any terminal; after a restart the session comes back with its
+saved history and the tool's resume command.
+
+The tools are set in the Ghostty configuration, one line each:
+
+```ini
+macos-ai-session = name:Claude Code,command:claude,resume:claude --continue
+macos-ai-session = name:Codex,command:codex,resume:codex resume --last
+```
+
+`name` is the menu title, `command` what runs (through the login shell, so tools
+installed with npm, Homebrew or an install script are found), `resume` what runs when a
+saved session is restored after its tmux session ended (optional; defaults to
+`command`). Quote a value that contains a comma. A tool whose program is not found in
+the login shell is shown disabled. `macos-ai-session =` on its own removes all entries.
+The Plugin Manager's AI Sessions page shows the configured tools, whether each is
+installed, and configuration errors. Ghostty itself never talks to an AI service and
+stores no keys: it only starts the command-line tools you installed.
+
 ## Example metrics
 
 The Swift example reads macOS counters once per second without shelling out:

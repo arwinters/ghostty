@@ -9,6 +9,8 @@ final class PluginManager: ObservableObject {
     /// The saved settings. Edit a copy in the UI and `apply` it.
     @Published private(set) var settings: StatusLabPluginSettings
     @Published private(set) var message: String?
+    /// A page the window should show, set by `showManager(page:)`.
+    @Published var requestedPage: PluginManagerPage?
 
     private var panel: NSWindow?
     private var menuItem: NSMenuItem?
@@ -145,6 +147,13 @@ final class PluginManager: ObservableObject {
         manager.target = self
         menu.addItem(manager)
 
+        let ai = NSMenuItem(title: "New AI Session", action: nil, keyEquivalent: "")
+        ai.submenu = NSMenu(title: "New AI Session")
+        ai.submenu?.delegate = AISessions.shared
+        ai.setImageIfDesired(systemSymbolName: "sparkles")
+        menu.addItem(.separator())
+        menu.addItem(ai)
+
         guard settings.tmux.enabled else { return }
         menu.addItem(.separator())
         let header = NSMenuItem(title: "tmux", action: nil, keyEquivalent: "")
@@ -187,7 +196,8 @@ final class PluginManager: ObservableObject {
 
     // MARK: Window
 
-    func showManager() {
+    func showManager(page: PluginManagerPage? = nil) {
+        requestedPage = page
         if panel == nil {
             panel = ManagerWindow.make(title: "Plugin Manager", autosave: "StatusLabPluginManager",
                                        rootView: PluginManagerView(manager: self))
@@ -197,6 +207,8 @@ final class PluginManager: ObservableObject {
         panel?.makeKeyAndOrderFront(nil)
     }
 }
+
+enum PluginManagerPage { case installed, ai }
 
 extension NSMenu {
     /// Adds a top-level menu while keeping Help the last menu, as macOS expects.
@@ -259,6 +271,7 @@ private struct PluginInfo {
     static let weather = builtIn("Weather", "cloud.sun", "Current conditions for a place you choose, from Open-Meteo.")
     static let clock = builtIn("Clock", "clock", "Date and time in the format of your region.")
     static let tmux = builtIn("tmux", "rectangle.split.3x1", "Panes that run in tmux, such as Claude Code sessions. They keep running when a pane closes or Ghostty crashes.")
+    static let ai = builtIn("AI Sessions", "sparkles", "Start Claude Code, Codex or another AI tool from a pane's right-click menu, in that pane's directory. Configured in your Ghostty configuration.")
 
     private static func builtIn(_ name: String, _ symbol: String, _ summary: String) -> PluginInfo {
         .init(name: name, symbol: symbol, kind: .builtIn, version: PluginManager.version, summary: summary)
@@ -339,11 +352,12 @@ private struct PluginManagerView: View {
     @ObservedObject var manager: PluginManager
     @ObservedObject private var host = StatusPluginHost.shared
     @ObservedObject private var tmux = TmuxPlugin.shared
+    @ObservedObject private var ai = AISessions.shared
     @State private var draft: StatusLabPluginSettings
     @State private var page: Page = .installed
 
     enum Page: Hashable, Identifiable {
-        case installed, stats, weather, clock, tmux
+        case installed, stats, weather, clock, tmux, ai
         case custom(UUID)
         var id: Self { self }
     }
@@ -354,7 +368,7 @@ private struct PluginManagerView: View {
     }
 
     private var pages: [Page] {
-        [.installed, .stats, .weather, .clock, .tmux] + draft.custom.map { .custom($0.key) }
+        [.installed, .stats, .weather, .clock, .tmux, .ai] + draft.custom.map { .custom($0.key) }
     }
 
     var body: some View {
@@ -374,6 +388,9 @@ private struct PluginManagerView: View {
             case .tmux:
                 PluginHeader(info: .tmux, enabled: $draft.tmux.enabled, state: state(.tmux))
                 TmuxSection(settings: $draft.tmux)
+            case .ai:
+                PluginHeader(info: .ai, enabled: nil, state: state(.ai))
+                AISection()
             case .custom(let key):
                 if let plugin = draft.custom.first(where: { $0.key == key }) {
                     let binding = custom(key, fallback: plugin)
@@ -394,6 +411,11 @@ private struct PluginManagerView: View {
             Button("Apply") { manager.apply(draft) }
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft == manager.settings)
+        }
+        .onReceive(manager.$requestedPage) { requested in
+            guard let requested else { return }
+            page = requested == .ai ? .ai : .installed
+            manager.requestedPage = nil
         }
         .onChange(of: draft.custom.map(\.key)) { keys in
             if case .custom(let key) = page, !keys.contains(key) { page = .installed }
@@ -432,6 +454,8 @@ private struct PluginManagerView: View {
             return .init(title: "Clock", symbol: PluginInfo.clock.symbol, badge: badge, group: "Plugins", badgeColor: color)
         case .tmux:
             return .init(title: "tmux", symbol: PluginInfo.tmux.symbol, badge: badge, group: "Plugins", badgeColor: color)
+        case .ai:
+            return .init(title: "AI Sessions", symbol: PluginInfo.ai.symbol, badge: badge, group: "Plugins", badgeColor: color)
         case .custom(let key):
             let plugin = draft.custom.first { $0.key == key }
             return .init(title: plugin?.displayName ?? "Plugin", symbol: plugin.map { PluginInfo($0).symbol } ?? "puzzlepiece.extension",
@@ -457,6 +481,12 @@ private struct PluginManagerView: View {
             if !draft.tmux.enabled { return manager.settings.tmux.enabled ? .willStop : .off }
             if tmux.tmuxPath == nil { return .unavailable("tmux is not installed (brew install tmux)") }
             return manager.settings.tmux.enabled ? .ready : .willStart
+        case .ai:
+            if !ai.errors.isEmpty { return .failed("Configuration error") }
+            if ai.sessions.isEmpty { return .off }
+            if tmux.tmuxPath == nil { return .unavailable("tmux is not installed (brew install tmux)") }
+            let count = ai.sessions.filter { ai.installed[$0.executable] != false }.count
+            return count == 0 ? .unavailable("None of the configured tools is installed") : .ready
         case .custom(let key):
             guard let plugin = draft.custom.first(where: { $0.key == key }) else { return .off }
             let saved = manager.settings.custom.first { $0.key == key }
@@ -500,6 +530,7 @@ private struct InstalledPage: View {
             PluginRow(info: .weather, enabled: $draft.weather.enabled, state: state(.weather)) { open(.weather) }
             PluginRow(info: .clock, enabled: $draft.clock.enabled, state: state(.clock)) { open(.clock) }
             PluginRow(info: .tmux, enabled: $draft.tmux.enabled, state: state(.tmux)) { open(.tmux) }
+            PluginRow(info: .ai, enabled: nil, state: state(.ai)) { open(.ai) }
             ForEach($draft.custom, id: \.key) { $plugin in
                 PluginRow(info: PluginInfo(plugin), enabled: $plugin.enabled, state: state(.custom(plugin.key))) {
                     open(.custom(plugin.key))
@@ -627,7 +658,8 @@ private struct KindBadge: View {
 
 private struct PluginRow: View {
     let info: PluginInfo
-    @Binding var enabled: Bool
+    /// nil for a plugin configured elsewhere (the AI sessions live in the configuration).
+    let enabled: Binding<Bool>?
     let state: PluginState
     let open: () -> Void
 
@@ -645,10 +677,12 @@ private struct PluginRow: View {
                 StateLabel(state: state)
             }
             Spacer(minLength: 8)
-            Toggle("Enabled", isOn: $enabled)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
+            if let enabled {
+                Toggle("Enabled", isOn: enabled)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
             Button(action: open) { Image(systemName: "chevron.right") }
                 .buttonStyle(.plain)
                 .foregroundStyle(.tertiary)
@@ -663,7 +697,7 @@ private struct PluginRow: View {
 /// The top of a plugin page: what it is, whether it runs, and the switch.
 private struct PluginHeader: View {
     let info: PluginInfo
-    @Binding var enabled: Bool
+    let enabled: Binding<Bool>?
     let state: PluginState
 
     var body: some View {
@@ -690,10 +724,12 @@ private struct PluginHeader: View {
                     .padding(.top, 2)
                 }
                 Spacer(minLength: 8)
-                Toggle("Enabled", isOn: $enabled)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .help(enabled ? "Turn off" : "Turn on")
+                if let enabled {
+                    Toggle("Enabled", isOn: enabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .help(enabled.wrappedValue ? "Turn off" : "Turn on")
+                }
             }
             .padding(.vertical, 6)
         }
@@ -994,6 +1030,76 @@ private struct CustomSection: View {
             Text(plugin.package == nil
                  ? "Removes the plugin from Ghostty when you press Apply. The executable itself is not deleted."
                  : "Removes the plugin and its installed copy when you press Apply.")
+        }
+    }
+}
+
+/// The AI tools of the configuration. Settings stay in the configuration file, as every
+/// other Ghostty setting; this page shows what it contains and whether each tool is found.
+private struct AISection: View {
+    @ObservedObject private var ai = AISessions.shared
+
+    static let example = """
+    macos-ai-session = name:Claude Code,command:claude,resume:claude --continue
+    macos-ai-session = name:Codex,command:codex,resume:codex resume --last
+    """
+
+    var body: some View {
+        Section {
+            if ai.sessions.isEmpty {
+                Text("No AI tools are configured. Add a macos-ai-session line to your configuration.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(ai.sessions) { session in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(session.name).fontWeight(.medium)
+                        Text(session.command == session.resume ? session.command
+                             : "\(session.command)   ·   after a restart: \(session.resume)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    Spacer()
+                    StateLabel(state: state(session))
+                }
+            }
+            ForEach(ai.errors, id: \.self) { error in
+                Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+        } header: {
+            HStack {
+                Text("Tools")
+                Spacer()
+                Button("Check Again") { ai.recheck() }
+                    .buttonStyle(.link)
+            }
+        } footer: {
+            Text("Each tool opens in a tmux session in the directory of the pane you right-click, as a split or a new tab. It keeps running when Ghostty quits; after a restart the resume command runs.")
+        }
+
+        Section {
+            Text(Self.example)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+            HStack {
+                Button("Open Configuration") { (NSApp.delegate as? AppDelegate)?.openConfig(nil) }
+                Button("Reload Configuration") { (NSApp.delegate as? AppDelegate)?.reloadConfig(nil) }
+                Spacer()
+            }
+        } header: {
+            Text("Configuration")
+        } footer: {
+            Text("One macos-ai-session line per tool: name is the menu title, command what runs, resume what runs when a saved session comes back after a restart (optional). Quote a value that contains a comma. Reload the configuration after editing.")
+        }
+        .onAppear { ai.reload() }
+    }
+
+    private func state(_ session: AISession) -> PluginState {
+        switch ai.installed[session.executable] {
+        case true?: .ready
+        case false?: .unavailable("“\(session.executable)” not found")
+        case nil: .starting
         }
     }
 }

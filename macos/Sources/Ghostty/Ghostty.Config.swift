@@ -202,6 +202,16 @@ extension Ghostty {
             return v
         }
 
+        /// Status Lab: the raw `macos-ai-session` values, one per AI tool.
+        var aiSessions: [String] {
+            guard let config = self.config else { return [] }
+            var value = ghostty_config_string_list_s()
+            let key = "macos-ai-session"
+            guard ghostty_config_get(config, &value, key, UInt(key.utf8.count)), value.len > 0,
+                  let strings = value.strings else { return [] }
+            return (0..<value.len).compactMap { strings[$0].map { String(cString: $0) } }
+        }
+
         var statusPluginsManifest: String? {
             guard let config = self.config else { return nil }
             var value: UnsafePointer<Int8>?

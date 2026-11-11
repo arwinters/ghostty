@@ -1096,6 +1096,30 @@ palette: Palette = .{},
 /// or a new terminal container is opened.
 @"macos-status-plugins": ?[:0]const u8 = null,
 
+/// Experimental (Status Lab builds): AI coding tools offered in a terminal's
+/// right-click menu under "New AI Session". Each opens in a tmux session in the
+/// directory of the clicked pane, as a split or a new tab, so it keeps running
+/// when Ghostty quits and can be attached from any terminal. Requires tmux.
+///
+/// Repeat the option for every tool. Each value is a comma-separated list of
+/// `key:value` pairs; quote a value that contains a comma:
+///
+///   * `name` - the title in the menu (required).
+///   * `command` - what runs in the session, through your login shell (required).
+///   * `resume` - what runs instead when a saved session is restored after the
+///     tmux session has ended, for example after a restart. Defaults to `command`.
+///
+/// Example:
+///
+///     macos-ai-session = name:Claude Code,command:claude,resume:claude --continue
+///     macos-ai-session = name:Codex,command:codex,resume:codex resume --last
+///
+/// Tools that are not installed are shown disabled. An empty value
+/// (`macos-ai-session =`) removes all entries above it.
+///
+/// Only implemented on macOS, in Status Lab builds.
+@"macos-ai-session": RepeatableCString = .{},
+
 /// Control when Ghostty preserves a zoomed split. Under normal circumstances,
 /// any operation that changes focus or layout of the split tree in a window
 /// will unzoom any zoomed split. This configuration allows you to control
@@ -6222,6 +6246,101 @@ pub const Palette = struct {
 /// a list of strings. This isn't called "StringList" because I find that
 /// sometimes leads to confusion that it _accepts_ a list such as
 /// comma-separated values.
+/// A repeatable string option that is also available through the C API, as
+/// ghostty_config_string_list_s. Same parsing as RepeatableString: every value
+/// appends, an empty value clears the list.
+pub const RepeatableCString = struct {
+    const Self = @This();
+
+    // Allocator for the lists is the arena for the parent config.
+    list: std.ArrayList([:0]const u8) = .empty,
+    value_c: std.ArrayList([*:0]const u8) = .empty,
+
+    /// ghostty_config_string_list_s
+    pub const C = extern struct {
+        strings: [*]const [*:0]const u8,
+        len: usize,
+    };
+
+    pub fn cval(self: *const Self) C {
+        return .{
+            .strings = self.value_c.items.ptr,
+            .len = self.value_c.items.len,
+        };
+    }
+
+    pub fn parseCLI(self: *Self, alloc: Allocator, input: ?[]const u8) !void {
+        const value = input orelse return error.ValueRequired;
+
+        // Empty value resets the list
+        if (value.len == 0) {
+            self.list.clearRetainingCapacity();
+            self.value_c.clearRetainingCapacity();
+            return;
+        }
+
+        const copy = try alloc.dupeSentinel(u8, value, 0);
+        try self.list.append(alloc, copy);
+        try self.value_c.append(alloc, copy.ptr);
+    }
+
+    /// Deep copy of the struct. Required by Config.
+    pub fn clone(self: *const Self, alloc: Allocator) Allocator.Error!Self {
+        var result: Self = .{};
+        try result.list.ensureTotalCapacity(alloc, self.list.items.len);
+        try result.value_c.ensureTotalCapacity(alloc, self.list.items.len);
+        for (self.list.items) |item| {
+            const copy = try alloc.dupeSentinel(u8, item, 0);
+            result.list.appendAssumeCapacity(copy);
+            result.value_c.appendAssumeCapacity(copy.ptr);
+        }
+        return result;
+    }
+
+    /// Compare if two of our value are equal. Required by Config.
+    pub fn equal(self: Self, other: Self) bool {
+        const itemsA = self.list.items;
+        const itemsB = other.list.items;
+        if (itemsA.len != itemsB.len) return false;
+        for (itemsA, itemsB) |a, b| {
+            if (!std.mem.eql(u8, a, b)) return false;
+        } else return true;
+    }
+
+    /// Used by Formatter
+    pub fn formatEntry(self: Self, formatter: formatterpkg.EntryFormatter) !void {
+        if (self.list.items.len == 0) {
+            try formatter.formatEntry(void, {});
+            return;
+        }
+
+        for (self.list.items) |value| {
+            try formatter.formatEntry([]const u8, value);
+        }
+    }
+
+    test "RepeatableCString parseCLI and cval" {
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var list: Self = .{};
+        try list.parseCLI(alloc, "name:A,command:a");
+        try list.parseCLI(alloc, "name:B,command:b");
+        const value = list.cval();
+        try testing.expectEqual(@as(usize, 2), value.len);
+        try testing.expectEqualStrings("name:B,command:b", std.mem.span(value.strings[1]));
+
+        const copy = try list.clone(alloc);
+        try testing.expect(list.equal(copy));
+        try testing.expectEqualStrings("name:A,command:a", std.mem.span(copy.cval().strings[0]));
+
+        try list.parseCLI(alloc, "");
+        try testing.expectEqual(@as(usize, 0), list.cval().len);
+    }
+};
+
 pub const RepeatableString = struct {
     const Self = @This();
 

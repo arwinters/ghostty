@@ -1,5 +1,20 @@
 # Status Lab changelog
 
+## 0.9.2 — 2026-11-11
+
+- AI sessions: right-click a pane › New AI Session › Claude Code, Codex or any configured
+  tool › Split Right, Split Down or New Tab. Starts in the pane's directory, in a tmux
+  session (keeps running when Ghostty quits; resumes after a restart). Also in the
+  Plugins menu.
+- New configuration option `macos-ai-session` (repeatable;
+  `name:…,command:…,resume:…`). Existing Status Lab configurations get Claude Code and
+  Codex entries once; remove them to drop the menu. Tools that are not installed are
+  shown disabled.
+- Plugin Manager: AI Sessions page with the configured tools, their install state and
+  configuration errors, and buttons to open and reload the configuration.
+- The pane menu no longer shows AutoFill and Services entries (such as OpenPGP), which do
+  not apply to a terminal.
+
 ## 0.9.1 — 2026-11-11
 
 - tmux runs on its own: when no tmux server is running, Ghostty starts it as a launchd
