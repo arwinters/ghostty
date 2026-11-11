@@ -1,5 +1,12 @@
 # Status Lab changelog
 
+## 0.9.5 — 2026-11-11
+
+- Fix: after the right-click menu, a tmux pane could start selecting text and scrolling
+  on its own. The menu swallows the right button's release, so Ghostty kept the button
+  pressed and reported every later mouse move to tmux as a drag. The release is now
+  sent when the menu closes (not reported to the program, like the press).
+
 ## 0.9.4 — 2026-11-11
 
 - Screenshots: right-click a pane › Screenshot › This Pane, This Tab or This Window.

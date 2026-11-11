@@ -1590,6 +1590,17 @@ extension Ghostty {
             self.showDefinition(for: str, at: pt)
         }
 
+        /// Status Lab: the context menu's tracking swallows the right button's release, so
+        /// the core kept the button pressed. A terminal with mouse reporting (tmux) then got
+        /// every later mouse move as a right-button drag: tmux selected text and scrolled.
+        /// Release it here; with shift the release itself is not reported, like the press.
+        override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+            super.didCloseMenu(menu, with: event)
+            guard menu.identifier == Self.contextMenuIdentifier, let surface else { return }
+            _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT,
+                                             ghostty_input_mods_e(GHOSTTY_MODS_SHIFT.rawValue))
+        }
+
         override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
             super.willOpenMenu(menu, with: event)
             // Status Lab: see SurfaceContextMenu.swift.
